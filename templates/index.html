@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>InfraMonitor</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+        }
+
+        .header {
+            background: #1f2937;
+            color: white;
+            padding: 20px 30px;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        .header p {
+            margin: 5px 0 0 0;
+            color: #cbd5e1;
+        }
+
+        .container {
+            padding: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,.08);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            background: #f1f5f9;
+            padding: 12px;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .enabled {
+            color: green;
+            font-weight: bold;
+        }
+
+        .disabled {
+            color: #999;
+        }
+
+        .error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="header">
+    <h1>InfraMonitor</h1>
+    <p>Azure PaaS Infrastructure Monitoring</p>
+</div>
+
+<div class="container">
+
+    {% if error_message %}
+    <div class="error">
+        <strong>Database Error:</strong>
+        {{ error_message }}
+    </div>
+    {% endif %}
+
+    <div class="card">
+
+        <h2>Monitored Endpoints</h2>
+
+        <table>
+
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>URL</th>
+                    <th>Expected</th>
+                    <th>Interval</th>
+                    <th>Enabled</th>
+                </tr>
+            </thead>
+
+            <tbody>
+
+            {% for endpoint in endpoints %}
+
+                <tr>
+
+                    <td>
+                        <strong>{{ endpoint.Name }}</strong>
+                    </td>
+
+                    <td>
+                        <a href="{{ endpoint.Url }}" target="_blank">
+                            {{ endpoint.Url }}
+                        </a>
+                    </td>
+
+                    <td>
+                        HTTP {{ endpoint.ExpectedStatus }}
+                    </td>
+
+                    <td>
+                        {{ endpoint.CheckInterval }} min
+                    </td>
+
+                    <td>
+                        {% if endpoint.IsEnabled %}
+                            <span class="enabled">Yes</span>
+                        {% else %}
+                            <span class="disabled">No</span>
+                        {% endif %}
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+</div>
+
+</body>
+</html>
