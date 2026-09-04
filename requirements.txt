@@ -1,3 +1,5 @@
 Flask
 mssql-python
 gunicorn
+azure-identity
+azure-storage-blob
