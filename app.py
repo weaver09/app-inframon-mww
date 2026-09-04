@@ -132,14 +132,12 @@ def get_openai_client():
 
     if not AZURE_OPENAI_ENDPOINT:
         raise RuntimeError(
-            "AZURE_OPENAI_ENDPOINT environment variable "
-            "is not configured."
+            "AZURE_OPENAI_ENDPOINT environment variable is not configured."
         )
 
     if not AZURE_OPENAI_DEPLOYMENT:
         raise RuntimeError(
-            "AZURE_OPENAI_DEPLOYMENT environment variable "
-            "is not configured."
+            "AZURE_OPENAI_DEPLOYMENT environment variable is not configured."
         )
 
     credential = DefaultAzureCredential()
@@ -149,13 +147,8 @@ def get_openai_client():
         "https://cognitiveservices.azure.com/.default"
     )
 
-    base_url = (
-        AZURE_OPENAI_ENDPOINT.rstrip("/")
-        + "/openai/v1/"
-    )
-
     return OpenAI(
-        base_url=base_url,
+        base_url=AZURE_OPENAI_ENDPOINT,
         api_key=token_provider
     )
 
