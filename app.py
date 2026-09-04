@@ -20,9 +20,7 @@ from azure.identity import (
 )
 
 from azure.storage.blob import BlobServiceClient
-
-from openai import AzureOpenAI
-
+from openai import OpenAI
 from mssql_python import connect
 from pypdf import PdfReader
 from docx import Document
@@ -63,20 +61,16 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv(
 
 STORAGE_CONTAINER_NAME = "documents"
 
-
 ALLOWED_EXTENSIONS = {
     "pdf",
     "docx",
     "xlsx"
 }
 
-
 MAX_FILE_SIZE_MB = 25
 
 app.config["MAX_CONTENT_LENGTH"] = (
-    MAX_FILE_SIZE_MB
-    * 1024
-    * 1024
+    MAX_FILE_SIZE_MB * 1024 * 1024
 )
 
 
@@ -119,8 +113,7 @@ def get_blob_service_client():
         )
 
     account_url = (
-        f"https://{STORAGE_ACCOUNT_NAME}"
-        ".blob.core.windows.net"
+        f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
     )
 
     credential = get_azure_credential()
@@ -149,20 +142,22 @@ def get_openai_client():
             "is not configured."
         )
 
-    credential = get_azure_credential()
+    credential = DefaultAzureCredential()
 
     token_provider = get_bearer_token_provider(
         credential,
         "https://cognitiveservices.azure.com/.default"
     )
 
-    client = AzureOpenAI(
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        azure_ad_token_provider=token_provider,
-        api_version="2024-10-21"
+    base_url = (
+        AZURE_OPENAI_ENDPOINT.rstrip("/")
+        + "/openai/v1/"
     )
 
-    return client
+    return OpenAI(
+        base_url=base_url,
+        api_key=token_provider
+    )
 
 
 # ============================================================
@@ -173,11 +168,7 @@ def allowed_file(filename):
 
     return (
         "." in filename
-        and
-        filename.rsplit(
-            ".",
-            1
-        )[1].lower()
+        and filename.rsplit(".", 1)[1].lower()
         in ALLOWED_EXTENSIONS
     )
 
@@ -202,7 +193,6 @@ def extract_pdf(file_data):
         text = page.extract_text() or ""
 
         if text.strip():
-
             parts.append(
                 f"\n--- Page {page_number} ---\n{text}"
             )
@@ -222,10 +212,7 @@ def extract_docx(file_data):
 
     parts = []
 
-    # --------------------------------------------------------
     # Paragraphs
-    # --------------------------------------------------------
-
     for paragraph in document.paragraphs:
 
         text = paragraph.text.strip()
@@ -233,10 +220,7 @@ def extract_docx(file_data):
         if text:
             parts.append(text)
 
-    # --------------------------------------------------------
     # Tables
-    # --------------------------------------------------------
-
     for table_index, table in enumerate(
         document.tables,
         start=1
@@ -277,8 +261,7 @@ def extract_xlsx(file_data):
     for worksheet in workbook.worksheets:
 
         parts.append(
-            f"\n--- Worksheet: "
-            f"{worksheet.title} ---"
+            f"\n--- Worksheet: {worksheet.title} ---"
         )
 
         for row in worksheet.iter_rows(
@@ -300,7 +283,6 @@ def extract_xlsx(file_data):
                 value.strip()
                 for value in values
             ):
-
                 parts.append(
                     " | ".join(values)
                 )
@@ -326,26 +308,22 @@ def extract_content(
     )
 
     if extension == "pdf":
-
         return extract_pdf(
             file_data
         )
 
     if extension == "docx":
-
         return extract_docx(
             file_data
         )
 
     if extension == "xlsx":
-
         return extract_xlsx(
             file_data
         )
 
     raise ValueError(
-        f"Unsupported file type: "
-        f"{extension}"
+        f"Unsupported file type: {extension}"
     )
 
 
@@ -365,18 +343,12 @@ def analyze_document_with_ai(
 
     client = get_openai_client()
 
-    # --------------------------------------------------------
-    # Limit first version to avoid unnecessarily large calls
-    # --------------------------------------------------------
-
+    # Keep initial calls reasonably sized
     max_characters = 60000
 
     text_to_analyze = (
-        extracted_text[
-            :max_characters
-        ]
+        extracted_text[:max_characters]
     )
-
 
     system_message = """
 You are an AI document analysis system.
@@ -390,7 +362,6 @@ Return only valid JSON.
 If information is not present in the document,
 use an empty array or null value where appropriate.
 """
-
 
     user_message = f"""
 Analyze the following document.
@@ -461,7 +432,6 @@ DOCUMENT:
 {text_to_analyze}
 """
 
-
     response = client.chat.completions.create(
 
         model=AZURE_OPENAI_DEPLOYMENT,
@@ -484,7 +454,6 @@ DOCUMENT:
         }
     )
 
-
     content = (
         response
         .choices[0]
@@ -492,14 +461,11 @@ DOCUMENT:
         .content
     )
 
-
     if not content:
-
         raise RuntimeError(
             "Azure OpenAI returned "
             "an empty response."
         )
-
 
     try:
 
@@ -514,11 +480,7 @@ DOCUMENT:
             "invalid JSON."
         ) from exc
 
-
-    # --------------------------------------------------------
-    # Ensure expected keys exist
-    # --------------------------------------------------------
-
+    # Make sure every expected property exists
     analysis.setdefault(
         "summary",
         ""
@@ -554,7 +516,6 @@ DOCUMENT:
         []
     )
 
-
     return analysis
 
 
@@ -566,16 +527,15 @@ DOCUMENT:
 def index():
 
     documents = []
-
     error_message = None
 
+    conn = None
+    cursor = None
 
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
-
 
         cursor.execute("""
             SELECT
@@ -592,71 +552,50 @@ def index():
                 a.Summary
             FROM dbo.Documents d
             LEFT JOIN dbo.DocumentAnalysis a
-                ON d.DocumentID =
-                   a.DocumentID
+                ON d.DocumentID = a.DocumentID
             ORDER BY
                 d.UploadDate DESC;
         """)
 
-
         rows = cursor.fetchall()
-
 
         for row in rows:
 
             documents.append({
-
-                "DocumentID":
-                    row[0],
-
-                "FileName":
-                    row[1],
-
-                "BlobName":
-                    row[2],
-
-                "FileType":
-                    row[3],
-
-                "FileSizeBytes":
-                    row[4],
-
-                "UploadDate":
-                    row[5],
-
-                "Status":
-                    row[6],
-
-                "ExtractedCharacters":
-                    row[7],
-
-                "AnalysisID":
-                    row[8],
-
-                "Summary":
-                    row[9]
-
+                "DocumentID": row[0],
+                "FileName": row[1],
+                "BlobName": row[2],
+                "FileType": row[3],
+                "FileSizeBytes": row[4],
+                "UploadDate": row[5],
+                "Status": row[6],
+                "ExtractedCharacters": row[7],
+                "AnalysisID": row[8],
+                "Summary": row[9]
             })
-
-
-        cursor.close()
-
-        conn.close()
-
 
     except Exception as exc:
 
         error_message = str(exc)
 
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
     return render_template(
-
         "index.html",
-
         documents=documents,
-
         error_message=error_message
-
     )
 
 
@@ -681,9 +620,7 @@ def upload_document():
             url_for("index")
         )
 
-
     file = request.files["file"]
-
 
     if file.filename == "":
 
@@ -695,7 +632,6 @@ def upload_document():
         return redirect(
             url_for("index")
         )
-
 
     if not allowed_file(
         file.filename
@@ -712,13 +648,11 @@ def upload_document():
             url_for("index")
         )
 
-
     original_filename = (
         secure_filename(
             file.filename
         )
     )
-
 
     extension = (
         original_filename
@@ -726,19 +660,14 @@ def upload_document():
         .lower()
     )
 
-
     unique_blob_name = (
         f"{uuid.uuid4()}-"
         f"{original_filename}"
     )
 
-
     document_id = None
-
     conn = None
-
     cursor = None
-
 
     try:
 
@@ -752,7 +681,6 @@ def upload_document():
             file_data
         )
 
-
         # ====================================================
         # Upload to Blob Storage
         # ====================================================
@@ -761,29 +689,18 @@ def upload_document():
             get_blob_service_client()
         )
 
-
         blob_client = (
             blob_service_client
             .get_blob_client(
-
-                container=
-                    STORAGE_CONTAINER_NAME,
-
-                blob=
-                    unique_blob_name
-
+                container=STORAGE_CONTAINER_NAME,
+                blob=unique_blob_name
             )
         )
 
-
         blob_client.upload_blob(
-
             file_data,
-
             overwrite=False
-
         )
-
 
         # ====================================================
         # Insert metadata into SQL
@@ -792,7 +709,6 @@ def upload_document():
         conn = get_db_connection()
 
         cursor = conn.cursor()
-
 
         cursor.execute("""
             INSERT INTO dbo.Documents
@@ -822,14 +738,11 @@ def upload_document():
             "Processing"
         ))
 
-
         row = cursor.fetchone()
 
         document_id = row[0]
 
-
         conn.commit()
-
 
         # ====================================================
         # Extract document content
@@ -841,7 +754,6 @@ def upload_document():
                 file_data
             )
         )
-
 
         # ====================================================
         # Save extracted text
@@ -861,9 +773,7 @@ def upload_document():
             document_id
         ))
 
-
         conn.commit()
-
 
         # ====================================================
         # Azure OpenAI analysis
@@ -874,7 +784,6 @@ def upload_document():
                 extracted_text
             )
         )
-
 
         # ====================================================
         # Store AI results
@@ -905,7 +814,6 @@ def upload_document():
             );
         """,
         (
-
             document_id,
 
             analysis.get(
@@ -953,9 +861,7 @@ def upload_document():
                     []
                 )
             )
-
         ))
-
 
         # ====================================================
         # Mark document analyzed
@@ -973,17 +879,14 @@ def upload_document():
             document_id
         ))
 
-
         conn.commit()
-
 
         flash(
             f"{original_filename} "
-            "uploaded, extracted, "
-            "and analyzed successfully.",
+            "uploaded, extracted, and "
+            "analyzed successfully.",
             "success"
         )
-
 
     except Exception as exc:
 
@@ -1005,7 +908,6 @@ def upload_document():
                         conn.cursor()
                     )
 
-
                 cursor.execute("""
                     UPDATE dbo.Documents
                     SET
@@ -1018,13 +920,10 @@ def upload_document():
                     document_id
                 ))
 
-
                 conn.commit()
-
 
         except Exception:
             pass
-
 
         flash(
             f"Upload failed: "
@@ -1032,26 +931,19 @@ def upload_document():
             "error"
         )
 
-
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
-
         except Exception:
             pass
-
 
         try:
-
             if conn:
                 conn.close()
-
         except Exception:
             pass
-
 
     return redirect(
         url_for("index")
@@ -1066,21 +958,12 @@ def upload_document():
 def health():
 
     results = {
-
-        "database":
-            "unknown",
-
-        "storage":
-            "unknown",
-
-        "openai":
-            "unknown"
-
+        "database": "unknown",
+        "storage": "unknown",
+        "openai": "unknown"
     }
 
-
     status_code = 200
-
 
     # ========================================================
     # SQL Test
@@ -1089,9 +972,7 @@ def health():
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
-
 
         cursor.execute(
             "SELECT 1;"
@@ -1099,16 +980,12 @@ def health():
 
         cursor.fetchone()
 
-
         cursor.close()
-
         conn.close()
-
 
         results[
             "database"
         ] = "connected"
-
 
     except Exception as exc:
 
@@ -1119,7 +996,6 @@ def health():
         )
 
         status_code = 500
-
 
     # ========================================================
     # Blob Storage Test
@@ -1131,7 +1007,6 @@ def health():
             get_blob_service_client()
         )
 
-
         container_client = (
             blob_service_client
             .get_container_client(
@@ -1139,14 +1014,11 @@ def health():
             )
         )
 
-
         container_client.get_container_properties()
-
 
         results[
             "storage"
         ] = "connected"
-
 
     except Exception as exc:
 
@@ -1158,9 +1030,8 @@ def health():
 
         status_code = 500
 
-
     # ========================================================
-    # OpenAI configuration test
+    # Azure OpenAI Configuration Test
     # ========================================================
 
     try:
@@ -1172,7 +1043,6 @@ def health():
                 "is not configured."
             )
 
-
         if not AZURE_OPENAI_DEPLOYMENT:
 
             raise RuntimeError(
@@ -1180,14 +1050,11 @@ def health():
                 "is not configured."
             )
 
-
         get_openai_client()
-
 
         results[
             "openai"
         ] = "configured"
-
 
     except Exception as exc:
 
@@ -1199,21 +1066,15 @@ def health():
 
         status_code = 500
 
-
     # ========================================================
-    # Overall status
+    # Overall Status
     # ========================================================
 
     results["status"] = (
-
         "healthy"
-
         if status_code == 200
-
         else "unhealthy"
-
     )
-
 
     return (
         results,
@@ -1228,9 +1089,6 @@ def health():
 if __name__ == "__main__":
 
     app.run(
-
         host="0.0.0.0",
-
         port=8000
-
     )
