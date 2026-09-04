@@ -3,3 +3,6 @@ mssql-python
 gunicorn
 azure-identity
 azure-storage-blob
+pypdf
+python-docx
+openpyxl
