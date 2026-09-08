@@ -207,7 +207,6 @@ def extract_docx(file_data):
 
     parts = []
 
-    # Paragraphs
     for paragraph in document.paragraphs:
 
         text = paragraph.text.strip()
@@ -215,7 +214,6 @@ def extract_docx(file_data):
         if text:
             parts.append(text)
 
-    # Tables
     for table_index, table in enumerate(
         document.tables,
         start=1
@@ -338,7 +336,6 @@ def analyze_document_with_ai(
 
     client = get_openai_client()
 
-    # Keep initial calls reasonably sized
     max_characters = 60000
 
     text_to_analyze = (
@@ -458,40 +455,13 @@ DOCUMENT:
             "Azure OpenAI returned invalid JSON."
         ) from exc
 
-    analysis.setdefault(
-        "summary",
-        ""
-    )
-
-    analysis.setdefault(
-        "key_topics",
-        []
-    )
-
-    analysis.setdefault(
-        "entities",
-        []
-    )
-
-    analysis.setdefault(
-        "tags",
-        []
-    )
-
-    analysis.setdefault(
-        "risks",
-        []
-    )
-
-    analysis.setdefault(
-        "action_items",
-        []
-    )
-
-    analysis.setdefault(
-        "important_dates",
-        []
-    )
+    analysis.setdefault("summary", "")
+    analysis.setdefault("key_topics", [])
+    analysis.setdefault("entities", [])
+    analysis.setdefault("tags", [])
+    analysis.setdefault("risks", [])
+    analysis.setdefault("action_items", [])
+    analysis.setdefault("important_dates", [])
 
     return analysis
 
@@ -577,6 +547,127 @@ def index():
 
 
 # ============================================================
+# Analysis Page
+# ============================================================
+
+@app.route("/analysis/<int:document_id>")
+def view_analysis(document_id):
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                d.DocumentID,
+                d.FileName,
+                d.FileType,
+                d.UploadDate,
+                d.Status,
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
+                a.Summary,
+                a.KeyTopics,
+                a.EntitiesJson,
+                a.TagsJson,
+                a.RisksJson,
+                a.ActionItemsJson,
+                a.ImportantDatesJson,
+                a.AnalysisDate
+            FROM dbo.Documents d
+            LEFT JOIN dbo.DocumentAnalysis a
+                ON d.DocumentID = a.DocumentID
+            WHERE
+                d.DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+            return "Document not found.", 404
+
+        analysis = {
+            "DocumentID": row[0],
+            "FileName": row[1],
+            "FileType": row[2],
+            "UploadDate": row[3],
+            "Status": row[4],
+            "ExtractedCharacters": row[5],
+            "Summary": row[6],
+            "KeyTopics": [],
+            "Entities": [],
+            "Tags": [],
+            "Risks": [],
+            "ActionItems": [],
+            "ImportantDates": [],
+            "AnalysisDate": row[13]
+        }
+
+        if row[7]:
+            analysis["KeyTopics"] = json.loads(
+                row[7]
+            )
+
+        if row[8]:
+            analysis["Entities"] = json.loads(
+                row[8]
+            )
+
+        if row[9]:
+            analysis["Tags"] = json.loads(
+                row[9]
+            )
+
+        if row[10]:
+            analysis["Risks"] = json.loads(
+                row[10]
+            )
+
+        if row[11]:
+            analysis["ActionItems"] = json.loads(
+                row[11]
+            )
+
+        if row[12]:
+            analysis["ImportantDates"] = json.loads(
+                row[12]
+            )
+
+        return render_template(
+            "analysis.html",
+            analysis=analysis
+        )
+
+    except Exception as exc:
+
+        return (
+            f"Unable to load analysis: {str(exc)}",
+            500
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+# ============================================================
 # Upload Document
 # ============================================================
 
@@ -648,19 +739,11 @@ def upload_document():
 
     try:
 
-        # ====================================================
-        # Read uploaded file
-        # ====================================================
-
         file_data = file.read()
 
         file_size = len(
             file_data
         )
-
-        # ====================================================
-        # Upload to Blob Storage
-        # ====================================================
 
         blob_service_client = (
             get_blob_service_client()
@@ -678,10 +761,6 @@ def upload_document():
             file_data,
             overwrite=False
         )
-
-        # ====================================================
-        # Insert metadata into SQL
-        # ====================================================
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -720,20 +799,12 @@ def upload_document():
 
         conn.commit()
 
-        # ====================================================
-        # Extract document content
-        # ====================================================
-
         extracted_text = (
             extract_content(
                 original_filename,
                 file_data
             )
         )
-
-        # ====================================================
-        # Save extracted text
-        # ====================================================
 
         cursor.execute("""
             UPDATE dbo.Documents
@@ -751,19 +822,11 @@ def upload_document():
 
         conn.commit()
 
-        # ====================================================
-        # Azure OpenAI analysis
-        # ====================================================
-
         analysis = (
             analyze_document_with_ai(
                 extracted_text
             )
         )
-
-        # ====================================================
-        # Store AI results
-        # ====================================================
 
         cursor.execute("""
             INSERT INTO dbo.DocumentAnalysis
@@ -839,10 +902,6 @@ def upload_document():
             )
         ))
 
-        # ====================================================
-        # Mark document analyzed
-        # ====================================================
-
         cursor.execute("""
             UPDATE dbo.Documents
             SET
@@ -857,18 +916,14 @@ def upload_document():
 
         conn.commit()
 
-        flash(
-            f"{original_filename} "
-            "uploaded, extracted, and "
-            "analyzed successfully.",
-            "success"
+        return redirect(
+            url_for(
+                "view_analysis",
+                document_id=document_id
+            )
         )
 
     except Exception as exc:
-
-        # ====================================================
-        # Mark failed document
-        # ====================================================
 
         try:
 
@@ -941,10 +996,6 @@ def health():
 
     status_code = 200
 
-    # ========================================================
-    # SQL Test
-    # ========================================================
-
     try:
 
         conn = get_db_connection()
@@ -959,23 +1010,15 @@ def health():
         cursor.close()
         conn.close()
 
-        results[
-            "database"
-        ] = "connected"
+        results["database"] = "connected"
 
     except Exception as exc:
 
-        results[
-            "database"
-        ] = (
+        results["database"] = (
             f"error: {str(exc)}"
         )
 
         status_code = 500
-
-    # ========================================================
-    # Blob Storage Test
-    # ========================================================
 
     try:
 
@@ -992,23 +1035,15 @@ def health():
 
         container_client.get_container_properties()
 
-        results[
-            "storage"
-        ] = "connected"
+        results["storage"] = "connected"
 
     except Exception as exc:
 
-        results[
-            "storage"
-        ] = (
+        results["storage"] = (
             f"error: {str(exc)}"
         )
 
         status_code = 500
-
-    # ========================================================
-    # Azure OpenAI Configuration Test
-    # ========================================================
 
     try:
 
@@ -1028,23 +1063,15 @@ def health():
 
         get_openai_client()
 
-        results[
-            "openai"
-        ] = "configured"
+        results["openai"] = "configured"
 
     except Exception as exc:
 
-        results[
-            "openai"
-        ] = (
+        results["openai"] = (
             f"error: {str(exc)}"
         )
 
         status_code = 500
-
-    # ========================================================
-    # Overall Status
-    # ========================================================
 
     results["status"] = (
         "healthy"
