@@ -426,10 +426,8 @@ DOCUMENT:
 """
 
     response = client.responses.create(
-
         model=AZURE_OPENAI_DEPLOYMENT,
-
-        messages=[
+        input=[
             {
                 "role": "system",
                 "content": system_message
@@ -438,21 +436,10 @@ DOCUMENT:
                 "role": "user",
                 "content": user_message
             }
-        ],
-
-        temperature=0.1,
-
-        response_format={
-            "type": "json_object"
-        }
+        ]
     )
-
-    content = (
-        response
-        .choices[0]
-        .message
-        .content
-    )
+    
+        content = response.output_text
 
     if not content:
         raise RuntimeError(
