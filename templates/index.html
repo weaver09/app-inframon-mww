@@ -59,17 +59,21 @@
             margin-bottom: 20px;
         }
 
-        button {
+        button,
+        .button {
             background: #2563eb;
             color: white;
             border: none;
-            padding: 10px 20px;
+            padding: 10px 16px;
             border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
         }
 
-        button:hover {
+        button:hover,
+        .button:hover {
             background: #1d4ed8;
         }
 
@@ -137,7 +141,7 @@
     <h1>AI Document Analyzer</h1>
 
     <p>
-        Upload documents for AI-powered analysis
+        Upload PDF, DOCX, and XLSX files for AI-powered analysis
     </p>
 
 </div>
@@ -198,7 +202,7 @@
                 <br>
 
                 <button type="submit">
-                    Upload Document
+                    Upload & Analyze
                 </button>
 
             </form>
@@ -230,9 +234,10 @@
 
                     <th>File Name</th>
                     <th>Type</th>
-                    <th>Size</th>
                     <th>Status</th>
+                    <th>Extracted Characters</th>
                     <th>Uploaded</th>
+                    <th>Action</th>
 
                 </tr>
 
@@ -253,33 +258,40 @@
                         {{ document.FileType }}
                     </td>
 
-                    <td>
-
-                        {% if document.FileSizeBytes %}
-
-                            {{
-                                "%.2f"|format(
-                                    document.FileSizeBytes
-                                    / 1024
-                                    / 1024
-                                )
-                            }}
-                            MB
-
-                        {% else %}
-
-                            N/A
-
-                        {% endif %}
-
-                    </td>
-
                     <td class="status">
                         {{ document.Status }}
                     </td>
 
                     <td>
+                        {{ document.ExtractedCharacters or 0 }}
+                    </td>
+
+                    <td>
                         {{ document.UploadDate }}
+                    </td>
+
+                    <td>
+
+                        {% if document.AnalysisID %}
+
+                            <a
+                                class="button"
+                                href="{{ url_for(
+                                    'view_analysis',
+                                    document_id=document.DocumentID
+                                ) }}"
+                            >
+                                View Analysis
+                            </a>
+
+                        {% else %}
+
+                            <span class="subtext">
+                                No analysis
+                            </span>
+
+                        {% endif %}
+
                     </td>
 
                 </tr>
