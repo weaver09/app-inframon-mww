@@ -125,19 +125,21 @@ def get_blob_service_client():
 
 
 # ============================================================
-# Azure OpenAI
+# Azure OpenAI / Foundry
 # ============================================================
 
 def get_openai_client():
 
     if not AZURE_OPENAI_ENDPOINT:
         raise RuntimeError(
-            "AZURE_OPENAI_ENDPOINT environment variable is not configured."
+            "AZURE_OPENAI_ENDPOINT environment variable "
+            "is not configured."
         )
 
     if not AZURE_OPENAI_DEPLOYMENT:
         raise RuntimeError(
-            "AZURE_OPENAI_DEPLOYMENT environment variable is not configured."
+            "AZURE_OPENAI_DEPLOYMENT environment variable "
+            "is not configured."
         )
 
     credential = DefaultAzureCredential()
@@ -438,29 +440,24 @@ DOCUMENT:
             }
         ]
     )
-    
-        content = response.output_text
+
+    content = response.output_text
 
     if not content:
         raise RuntimeError(
-            "Azure OpenAI returned "
-            "an empty response."
+            "Azure OpenAI returned an empty response."
         )
 
     try:
-
         analysis = json.loads(
             content
         )
 
     except json.JSONDecodeError as exc:
-
         raise RuntimeError(
-            "Azure OpenAI returned "
-            "invalid JSON."
+            "Azure OpenAI returned invalid JSON."
         ) from exc
 
-    # Make sure every expected property exists
     analysis.setdefault(
         "summary",
         ""
@@ -687,7 +684,6 @@ def upload_document():
         # ====================================================
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
         cursor.execute("""
