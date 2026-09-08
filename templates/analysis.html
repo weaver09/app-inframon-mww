@@ -48,14 +48,48 @@
             box-shadow: 0 2px 6px rgba(0,0,0,.08);
         }
 
-        .back-button {
-            background: #374151;
+        .top-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .button {
+            background: #2563eb;
             color: white;
             padding: 10px 16px;
             border-radius: 6px;
             text-decoration: none;
             display: inline-block;
-            margin-bottom: 20px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .button:hover {
+            background: #1d4ed8;
+        }
+
+        .button-secondary {
+            background: #475569;
+        }
+
+        .button-warning {
+            background: #d97706;
+        }
+
+        .button-danger {
+            background: #dc2626;
+        }
+
+        .button-danger:hover {
+            background: #b91c1c;
+        }
+
+        .inline-form {
+            display: inline;
+            margin: 0;
         }
 
         .tag {
@@ -126,7 +160,8 @@
 
         .metadata {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            grid-template-columns:
+                repeat(auto-fit, minmax(180px, 1fr));
             gap: 15px;
         }
 
@@ -136,30 +171,216 @@
             border-radius: 6px;
         }
 
+        .ask-box textarea {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 90px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            resize: vertical;
+            margin-bottom: 12px;
+        }
+
+        .answer {
+            background: #f0f9ff;
+            border-left: 4px solid #2563eb;
+            padding: 18px;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            margin-top: 20px;
+        }
+
+        .question {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .flash-success {
+            background: #dcfce7;
+            color: #166534;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .flash-error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
     </style>
 
 </head>
 
+
 <body>
+
 
 <div class="header">
 
     <h1>Document Analysis</h1>
 
-    <p>{{ analysis.FileName }}</p>
+    <p>
+        {{ analysis.FileName }}
+    </p>
 
 </div>
 
 
 <div class="container">
 
-    <a
-        class="back-button"
-        href="{{ url_for('index') }}"
-    >
-        ← Back to Documents
-    </a>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+
+        {% if messages %}
+
+            {% for category, message in messages %}
+
+                <div class="flash-{{ category }}">
+                    {{ message }}
+                </div>
+
+            {% endfor %}
+
+        {% endif %}
+
+    {% endwith %}
+
+
+    <!-- ====================================================
+         Actions
+         ==================================================== -->
+
+    <div class="top-actions">
+
+        <a
+            class="button button-secondary"
+            href="{{ url_for('index') }}"
+        >
+            ← Back to Documents
+        </a>
+
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'download_document',
+                document_id=analysis.DocumentID
+            ) }}"
+        >
+            Download Original
+        </a>
+
+
+        <form
+            class="inline-form"
+            method="POST"
+            action="{{ url_for(
+                'reanalyze_document',
+                document_id=analysis.DocumentID
+            ) }}"
+        >
+
+            <button
+                type="submit"
+                class="button button-warning"
+            >
+                Re-analyze
+            </button>
+
+        </form>
+
+
+        <form
+            class="inline-form"
+            method="POST"
+            action="{{ url_for(
+                'delete_document',
+                document_id=analysis.DocumentID
+            ) }}"
+            onsubmit="
+                return confirm(
+                    'Delete this document permanently?'
+                );
+            "
+        >
+
+            <button
+                type="submit"
+                class="button button-danger"
+            >
+                Delete
+            </button>
+
+        </form>
+
+    </div>
+
+
+    <!-- ====================================================
+         Ask Document
+         ==================================================== -->
+
+    <div class="card">
+
+        <h2>Ask This Document</h2>
+
+        <p>
+            Ask a question using the document's extracted content.
+        </p>
+
+        <form
+            class="ask-box"
+            method="POST"
+            action="{{ url_for(
+                'ask_document',
+                document_id=analysis.DocumentID
+            ) }}"
+        >
+
+            <textarea
+                name="question"
+                placeholder="Example: What are the biggest risks in this document?"
+                required
+            >{{ question or "" }}</textarea>
+
+            <button
+                class="button"
+                type="submit"
+            >
+                Ask
+            </button>
+
+        </form>
+
+
+        {% if answer %}
+
+            <div class="answer">
+
+                <div class="question">
+                    Q: {{ question }}
+                </div>
+
+                {{ answer }}
+
+            </div>
+
+        {% endif %}
+
+    </div>
+
+
+    <!-- ====================================================
+         Document Information
+         ==================================================== -->
 
     <div class="card">
 
@@ -168,50 +389,102 @@
         <div class="metadata">
 
             <div class="metadata-box">
-                <div class="label">File</div>
+
+                <div class="label">
+                    File
+                </div>
+
                 {{ analysis.FileName }}
+
             </div>
 
+
             <div class="metadata-box">
-                <div class="label">Type</div>
+
+                <div class="label">
+                    Type
+                </div>
+
                 {{ analysis.FileType|upper }}
+
             </div>
 
+
             <div class="metadata-box">
-                <div class="label">Status</div>
+
+                <div class="label">
+                    Status
+                </div>
+
                 {{ analysis.Status }}
+
             </div>
 
-            <div class="metadata-box">
-                <div class="label">Extracted Characters</div>
-                {{ analysis.ExtractedCharacters or 0 }}
-            </div>
 
             <div class="metadata-box">
-                <div class="label">Uploaded</div>
+
+                <div class="label">
+                    Extracted Characters
+                </div>
+
+                {{
+                    "{:,}".format(
+                        analysis.ExtractedCharacters or 0
+                    )
+                }}
+
+            </div>
+
+
+            <div class="metadata-box">
+
+                <div class="label">
+                    Uploaded
+                </div>
+
                 {{ analysis.UploadDate }}
+
             </div>
 
+
             <div class="metadata-box">
-                <div class="label">Analyzed</div>
+
+                <div class="label">
+                    Analyzed
+                </div>
+
                 {{ analysis.AnalysisDate or "N/A" }}
+
             </div>
 
         </div>
 
     </div>
 
+
+    <!-- ====================================================
+         Summary
+         ==================================================== -->
 
     <div class="card">
 
         <h2>Summary</h2>
 
         <div class="summary">
-            {{ analysis.Summary or "No summary available." }}
+
+            {{
+                analysis.Summary
+                or "No summary available."
+            }}
+
         </div>
 
     </div>
 
+
+    <!-- ====================================================
+         Key Topics
+         ==================================================== -->
 
     <div class="card">
 
@@ -229,12 +502,18 @@
 
         {% else %}
 
-            <p>No key topics identified.</p>
+            <p>
+                No key topics identified.
+            </p>
 
         {% endif %}
 
     </div>
 
+
+    <!-- ====================================================
+         Tags
+         ==================================================== -->
 
     <div class="card">
 
@@ -252,12 +531,18 @@
 
         {% else %}
 
-            <p>No tags identified.</p>
+            <p>
+                No tags identified.
+            </p>
 
         {% endif %}
 
     </div>
 
+
+    <!-- ====================================================
+         Entities
+         ==================================================== -->
 
     <div class="card">
 
@@ -287,12 +572,18 @@
 
         {% else %}
 
-            <p>No entities identified.</p>
+            <p>
+                No entities identified.
+            </p>
 
         {% endif %}
 
     </div>
 
+
+    <!-- ====================================================
+         Risks
+         ==================================================== -->
 
     <div class="card">
 
@@ -320,12 +611,18 @@
 
         {% else %}
 
-            <p>No risks identified.</p>
+            <p>
+                No risks identified.
+            </p>
 
         {% endif %}
 
     </div>
 
+
+    <!-- ====================================================
+         Action Items
+         ==================================================== -->
 
     <div class="card">
 
@@ -344,11 +641,13 @@
                     {% if item.owner %}
 
                         <div>
+
                             <span class="label">
                                 Owner:
                             </span>
 
                             {{ item.owner }}
+
                         </div>
 
                     {% endif %}
@@ -356,11 +655,13 @@
                     {% if item.due_date %}
 
                         <div>
+
                             <span class="label">
                                 Due:
                             </span>
 
                             {{ item.due_date }}
+
                         </div>
 
                     {% endif %}
@@ -371,12 +672,18 @@
 
         {% else %}
 
-            <p>No action items identified.</p>
+            <p>
+                No action items identified.
+            </p>
 
         {% endif %}
 
     </div>
 
+
+    <!-- ====================================================
+         Important Dates
+         ==================================================== -->
 
     <div class="card">
 
@@ -402,7 +709,9 @@
 
         {% else %}
 
-            <p>No important dates identified.</p>
+            <p>
+                No important dates identified.
+            </p>
 
         {% endif %}
 
@@ -410,6 +719,7 @@
 
 
 </div>
+
 
 </body>
 

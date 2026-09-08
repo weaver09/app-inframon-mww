@@ -35,7 +35,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1250px;
             margin: 30px auto;
             padding: 0 20px;
         }
@@ -46,6 +46,31 @@
             padding: 24px;
             margin-bottom: 24px;
             box-shadow: 0 2px 6px rgba(0,0,0,.08);
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 6px rgba(0,0,0,.08);
+        }
+
+        .stat-number {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            color: #64748b;
+            margin-top: 5px;
         }
 
         .upload-box {
@@ -64,7 +89,7 @@
             background: #2563eb;
             color: white;
             border: none;
-            padding: 10px 16px;
+            padding: 9px 14px;
             border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
@@ -75,6 +100,38 @@
         button:hover,
         .button:hover {
             background: #1d4ed8;
+        }
+
+        .button-secondary {
+            background: #475569;
+        }
+
+        .button-danger {
+            background: #dc2626;
+        }
+
+        .button-danger:hover {
+            background: #b91c1c;
+        }
+
+        .filters {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .filters input,
+        .filters select {
+            padding: 9px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .filters input {
+            min-width: 280px;
         }
 
         table {
@@ -91,6 +148,7 @@
         td {
             padding: 12px;
             border-bottom: 1px solid #e5e7eb;
+            vertical-align: middle;
         }
 
         .status {
@@ -130,18 +188,31 @@
             font-size: 13px;
         }
 
+        .actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .inline-form {
+            display: inline;
+            margin: 0;
+        }
+
     </style>
 
 </head>
 
+
 <body>
+
 
 <div class="header">
 
     <h1>AI Document Analyzer</h1>
 
     <p>
-        Upload PDF, DOCX, and XLSX files for AI-powered analysis
+        Upload, analyze, search, and query documents with AI
     </p>
 
 </div>
@@ -179,6 +250,82 @@
 
     {% endif %}
 
+
+    <!-- ====================================================
+         Dashboard
+         ==================================================== -->
+
+    <div class="stats">
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.TotalDocuments }}
+            </div>
+            <div class="stat-label">
+                Documents
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.AnalyzedDocuments }}
+            </div>
+            <div class="stat-label">
+                Analyzed
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.FailedDocuments }}
+            </div>
+            <div class="stat-label">
+                Failed
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ "{:,}".format(stats.TotalCharacters) }}
+            </div>
+            <div class="stat-label">
+                Extracted Characters
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.PDFDocuments }}
+            </div>
+            <div class="stat-label">
+                PDF
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.DOCXDocuments }}
+            </div>
+            <div class="stat-label">
+                DOCX
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-number">
+                {{ stats.XLSXDocuments }}
+            </div>
+            <div class="stat-label">
+                XLSX
+            </div>
+        </div>
+
+    </div>
+
+
+    <!-- ====================================================
+         Upload
+         ==================================================== -->
 
     <div class="card">
 
@@ -220,9 +367,109 @@
     </div>
 
 
+    <!-- ====================================================
+         Documents
+         ==================================================== -->
+
     <div class="card">
 
         <h2>Documents</h2>
+
+
+        <form
+            class="filters"
+            method="GET"
+            action="{{ url_for('index') }}"
+        >
+
+            <input
+                type="text"
+                name="q"
+                value="{{ search_text }}"
+                placeholder="Search filename, summary, topic, or tag"
+            >
+
+            <select name="type">
+
+                <option value="">
+                    All file types
+                </option>
+
+                <option
+                    value="pdf"
+                    {% if file_type == "pdf" %}selected{% endif %}
+                >
+                    PDF
+                </option>
+
+                <option
+                    value="docx"
+                    {% if file_type == "docx" %}selected{% endif %}
+                >
+                    DOCX
+                </option>
+
+                <option
+                    value="xlsx"
+                    {% if file_type == "xlsx" %}selected{% endif %}
+                >
+                    XLSX
+                </option>
+
+            </select>
+
+
+            <select name="status">
+
+                <option value="">
+                    All statuses
+                </option>
+
+                <option
+                    value="Analyzed"
+                    {% if status_filter == "Analyzed" %}selected{% endif %}
+                >
+                    Analyzed
+                </option>
+
+                <option
+                    value="Processing"
+                    {% if status_filter == "Processing" %}selected{% endif %}
+                >
+                    Processing
+                </option>
+
+                <option
+                    value="Extracted"
+                    {% if status_filter == "Extracted" %}selected{% endif %}
+                >
+                    Extracted
+                </option>
+
+                <option
+                    value="Processing Failed"
+                    {% if status_filter == "Processing Failed" %}selected{% endif %}
+                >
+                    Failed
+                </option>
+
+            </select>
+
+
+            <button type="submit">
+                Search
+            </button>
+
+
+            <a
+                class="button button-secondary"
+                href="{{ url_for('index') }}"
+            >
+                Clear
+            </a>
+
+        </form>
+
 
         {% if documents %}
 
@@ -235,9 +482,9 @@
                     <th>File Name</th>
                     <th>Type</th>
                     <th>Status</th>
-                    <th>Extracted Characters</th>
+                    <th>Characters</th>
                     <th>Uploaded</th>
-                    <th>Action</th>
+                    <th>Actions</th>
 
                 </tr>
 
@@ -263,7 +510,9 @@
                     </td>
 
                     <td>
-                        {{ document.ExtractedCharacters or 0 }}
+                        {{ "{:,}".format(
+                            document.ExtractedCharacters or 0
+                        ) }}
                     </td>
 
                     <td>
@@ -272,25 +521,58 @@
 
                     <td>
 
-                        {% if document.AnalysisID %}
+                        <div class="actions">
+
+                            {% if document.AnalysisID %}
+
+                                <a
+                                    class="button"
+                                    href="{{ url_for(
+                                        'view_analysis',
+                                        document_id=document.DocumentID
+                                    ) }}"
+                                >
+                                    Analysis
+                                </a>
+
+                            {% endif %}
+
 
                             <a
-                                class="button"
+                                class="button button-secondary"
                                 href="{{ url_for(
-                                    'view_analysis',
+                                    'download_document',
                                     document_id=document.DocumentID
                                 ) }}"
                             >
-                                View Analysis
+                                Download
                             </a>
 
-                        {% else %}
 
-                            <span class="subtext">
-                                No analysis
-                            </span>
+                            <form
+                                class="inline-form"
+                                method="POST"
+                                action="{{ url_for(
+                                    'delete_document',
+                                    document_id=document.DocumentID
+                                ) }}"
+                                onsubmit="
+                                    return confirm(
+                                        'Delete this document permanently?'
+                                    );
+                                "
+                            >
 
-                        {% endif %}
+                                <button
+                                    type="submit"
+                                    class="button-danger"
+                                >
+                                    Delete
+                                </button>
+
+                            </form>
+
+                        </div>
 
                     </td>
 
@@ -304,7 +586,9 @@
 
         {% else %}
 
-            <p>No documents uploaded yet.</p>
+            <p>
+                No documents match the current search.
+            </p>
 
         {% endif %}
 

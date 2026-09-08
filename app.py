@@ -9,7 +9,8 @@ from flask import (
     request,
     redirect,
     url_for,
-    flash
+    flash,
+    send_file
 )
 
 from werkzeug.utils import secure_filename
@@ -156,7 +157,7 @@ def get_openai_client():
 
 
 # ============================================================
-# File Validation
+# Helpers
 # ============================================================
 
 def allowed_file(filename):
@@ -166,6 +167,17 @@ def allowed_file(filename):
         and filename.rsplit(".", 1)[1].lower()
         in ALLOWED_EXTENSIONS
     )
+
+
+def safe_json_loads(value):
+
+    if not value:
+        return []
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return []
 
 
 # ============================================================
@@ -467,6 +479,247 @@ DOCUMENT:
 
 
 # ============================================================
+# Ask Document
+# ============================================================
+
+def ask_document_with_ai(
+    extracted_text,
+    question
+):
+
+    if not extracted_text:
+        raise RuntimeError(
+            "No extracted text is available."
+        )
+
+    if not question:
+        raise RuntimeError(
+            "A question is required."
+        )
+
+    client = get_openai_client()
+
+    max_characters = 60000
+
+    text_to_analyze = (
+        extracted_text[:max_characters]
+    )
+
+    system_message = """
+You answer questions about a supplied document.
+
+Only use information contained in the document.
+
+Do not invent facts.
+
+If the answer cannot be determined from the document,
+say that clearly.
+
+Provide a concise but useful answer.
+"""
+
+    user_message = f"""
+DOCUMENT:
+
+{text_to_analyze}
+
+
+QUESTION:
+
+{question}
+"""
+
+    response = client.responses.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        input=[
+            {
+                "role": "system",
+                "content": system_message
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ]
+    )
+
+    answer = response.output_text
+
+    if not answer:
+        raise RuntimeError(
+            "Azure OpenAI returned an empty response."
+        )
+
+    return answer
+
+
+# ============================================================
+# Save Analysis
+# ============================================================
+
+def save_analysis(
+    cursor,
+    document_id,
+    analysis
+):
+
+    cursor.execute("""
+        SELECT
+            AnalysisID
+        FROM dbo.DocumentAnalysis
+        WHERE
+            DocumentID = ?;
+    """,
+    (
+        document_id,
+    ))
+
+    existing = cursor.fetchone()
+
+    if existing:
+
+        cursor.execute("""
+            UPDATE dbo.DocumentAnalysis
+            SET
+                Summary = ?,
+                KeyTopics = ?,
+                EntitiesJson = ?,
+                TagsJson = ?,
+                RisksJson = ?,
+                ActionItemsJson = ?,
+                ImportantDatesJson = ?,
+                AnalysisDate = SYSUTCDATETIME()
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            analysis.get(
+                "summary"
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "key_topics",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "entities",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "tags",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "risks",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "action_items",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "important_dates",
+                    []
+                )
+            ),
+
+            document_id
+        ))
+
+    else:
+
+        cursor.execute("""
+            INSERT INTO dbo.DocumentAnalysis
+            (
+                DocumentID,
+                Summary,
+                KeyTopics,
+                EntitiesJson,
+                TagsJson,
+                RisksJson,
+                ActionItemsJson,
+                ImportantDatesJson
+            )
+            VALUES
+            (
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            );
+        """,
+        (
+            document_id,
+
+            analysis.get(
+                "summary"
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "key_topics",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "entities",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "tags",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "risks",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "action_items",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "important_dates",
+                    []
+                )
+            )
+        ))
+
+
+# ============================================================
 # Home Page
 # ============================================================
 
@@ -476,6 +729,37 @@ def index():
     documents = []
     error_message = None
 
+    search_text = (
+        request.args.get(
+            "q",
+            ""
+        ).strip()
+    )
+
+    file_type = (
+        request.args.get(
+            "type",
+            ""
+        ).strip().lower()
+    )
+
+    status_filter = (
+        request.args.get(
+            "status",
+            ""
+        ).strip()
+    )
+
+    stats = {
+        "TotalDocuments": 0,
+        "AnalyzedDocuments": 0,
+        "FailedDocuments": 0,
+        "TotalCharacters": 0,
+        "PDFDocuments": 0,
+        "DOCXDocuments": 0,
+        "XLSXDocuments": 0
+    }
+
     conn = None
     cursor = None
 
@@ -484,7 +768,83 @@ def index():
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        # ====================================================
+        # Dashboard Statistics
+        # ====================================================
+
         cursor.execute("""
+            SELECT
+                COUNT(*) AS TotalDocuments,
+
+                SUM(
+                    CASE
+                        WHEN Status = 'Analyzed'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS AnalyzedDocuments,
+
+                SUM(
+                    CASE
+                        WHEN Status = 'Processing Failed'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS FailedDocuments,
+
+                SUM(
+                    ISNULL(
+                        LEN(ExtractedText),
+                        0
+                    )
+                ) AS TotalCharacters,
+
+                SUM(
+                    CASE
+                        WHEN FileType = 'pdf'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS PDFDocuments,
+
+                SUM(
+                    CASE
+                        WHEN FileType = 'docx'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS DOCXDocuments,
+
+                SUM(
+                    CASE
+                        WHEN FileType = 'xlsx'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS XLSXDocuments
+
+            FROM dbo.Documents;
+        """)
+
+        row = cursor.fetchone()
+
+        if row:
+
+            stats = {
+                "TotalDocuments": row[0] or 0,
+                "AnalyzedDocuments": row[1] or 0,
+                "FailedDocuments": row[2] or 0,
+                "TotalCharacters": row[3] or 0,
+                "PDFDocuments": row[4] or 0,
+                "DOCXDocuments": row[5] or 0,
+                "XLSXDocuments": row[6] or 0
+            }
+
+        # ====================================================
+        # Document Search
+        # ====================================================
+
+        sql = """
             SELECT
                 d.DocumentID,
                 d.FileName,
@@ -500,9 +860,64 @@ def index():
             FROM dbo.Documents d
             LEFT JOIN dbo.DocumentAnalysis a
                 ON d.DocumentID = a.DocumentID
+            WHERE
+                1 = 1
+        """
+
+        parameters = []
+
+        if search_text:
+
+            sql += """
+                AND
+                (
+                    d.FileName LIKE ?
+                    OR a.Summary LIKE ?
+                    OR a.KeyTopics LIKE ?
+                    OR a.TagsJson LIKE ?
+                )
+            """
+
+            wildcard = (
+                f"%{search_text}%"
+            )
+
+            parameters.extend([
+                wildcard,
+                wildcard,
+                wildcard,
+                wildcard
+            ])
+
+        if file_type:
+
+            sql += """
+                AND d.FileType = ?
+            """
+
+            parameters.append(
+                file_type
+            )
+
+        if status_filter:
+
+            sql += """
+                AND d.Status = ?
+            """
+
+            parameters.append(
+                status_filter
+            )
+
+        sql += """
             ORDER BY
                 d.UploadDate DESC;
-        """)
+        """
+
+        cursor.execute(
+            sql,
+            tuple(parameters)
+        )
 
         rows = cursor.fetchall()
 
@@ -542,7 +957,11 @@ def index():
     return render_template(
         "index.html",
         documents=documents,
-        error_message=error_message
+        error_message=error_message,
+        stats=stats,
+        search_text=search_text,
+        file_type=file_type,
+        status_filter=status_filter
     )
 
 
@@ -601,48 +1020,32 @@ def view_analysis(document_id):
             "Status": row[4],
             "ExtractedCharacters": row[5],
             "Summary": row[6],
-            "KeyTopics": [],
-            "Entities": [],
-            "Tags": [],
-            "Risks": [],
-            "ActionItems": [],
-            "ImportantDates": [],
+            "KeyTopics": safe_json_loads(
+                row[7]
+            ),
+            "Entities": safe_json_loads(
+                row[8]
+            ),
+            "Tags": safe_json_loads(
+                row[9]
+            ),
+            "Risks": safe_json_loads(
+                row[10]
+            ),
+            "ActionItems": safe_json_loads(
+                row[11]
+            ),
+            "ImportantDates": safe_json_loads(
+                row[12]
+            ),
             "AnalysisDate": row[13]
         }
 
-        if row[7]:
-            analysis["KeyTopics"] = json.loads(
-                row[7]
-            )
-
-        if row[8]:
-            analysis["Entities"] = json.loads(
-                row[8]
-            )
-
-        if row[9]:
-            analysis["Tags"] = json.loads(
-                row[9]
-            )
-
-        if row[10]:
-            analysis["Risks"] = json.loads(
-                row[10]
-            )
-
-        if row[11]:
-            analysis["ActionItems"] = json.loads(
-                row[11]
-            )
-
-        if row[12]:
-            analysis["ImportantDates"] = json.loads(
-                row[12]
-            )
-
         return render_template(
             "analysis.html",
-            analysis=analysis
+            analysis=analysis,
+            question=None,
+            answer=None
         )
 
     except Exception as exc:
@@ -665,6 +1068,488 @@ def view_analysis(document_id):
                 conn.close()
         except Exception:
             pass
+
+
+# ============================================================
+# Ask This Document
+# ============================================================
+
+@app.route(
+    "/analysis/<int:document_id>/ask",
+    methods=["POST"]
+)
+def ask_document(document_id):
+
+    question = (
+        request.form.get(
+            "question",
+            ""
+        ).strip()
+    )
+
+    if not question:
+
+        flash(
+            "Enter a question first.",
+            "error"
+        )
+
+        return redirect(
+            url_for(
+                "view_analysis",
+                document_id=document_id
+            )
+        )
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                d.DocumentID,
+                d.FileName,
+                d.FileType,
+                d.UploadDate,
+                d.Status,
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
+                d.ExtractedText,
+                a.Summary,
+                a.KeyTopics,
+                a.EntitiesJson,
+                a.TagsJson,
+                a.RisksJson,
+                a.ActionItemsJson,
+                a.ImportantDatesJson,
+                a.AnalysisDate
+            FROM dbo.Documents d
+            LEFT JOIN dbo.DocumentAnalysis a
+                ON d.DocumentID = a.DocumentID
+            WHERE
+                d.DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+            return "Document not found.", 404
+
+        answer = ask_document_with_ai(
+            row[6],
+            question
+        )
+
+        analysis = {
+            "DocumentID": row[0],
+            "FileName": row[1],
+            "FileType": row[2],
+            "UploadDate": row[3],
+            "Status": row[4],
+            "ExtractedCharacters": row[5],
+            "Summary": row[7],
+            "KeyTopics": safe_json_loads(
+                row[8]
+            ),
+            "Entities": safe_json_loads(
+                row[9]
+            ),
+            "Tags": safe_json_loads(
+                row[10]
+            ),
+            "Risks": safe_json_loads(
+                row[11]
+            ),
+            "ActionItems": safe_json_loads(
+                row[12]
+            ),
+            "ImportantDates": safe_json_loads(
+                row[13]
+            ),
+            "AnalysisDate": row[14]
+        }
+
+        return render_template(
+            "analysis.html",
+            analysis=analysis,
+            question=question,
+            answer=answer
+        )
+
+    except Exception as exc:
+
+        flash(
+            f"Question failed: {str(exc)}",
+            "error"
+        )
+
+        return redirect(
+            url_for(
+                "view_analysis",
+                document_id=document_id
+            )
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# Re-analyze Document
+# ============================================================
+
+@app.route(
+    "/analysis/<int:document_id>/reanalyze",
+    methods=["POST"]
+)
+def reanalyze_document(document_id):
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                ExtractedText
+            FROM dbo.Documents
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+            return "Document not found.", 404
+
+        extracted_text = row[0]
+
+        if not extracted_text:
+
+            raise RuntimeError(
+                "This document has no extracted text."
+            )
+
+        cursor.execute("""
+            UPDATE dbo.Documents
+            SET
+                Status = ?
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            "Processing",
+            document_id
+        ))
+
+        conn.commit()
+
+        analysis = analyze_document_with_ai(
+            extracted_text
+        )
+
+        save_analysis(
+            cursor,
+            document_id,
+            analysis
+        )
+
+        cursor.execute("""
+            UPDATE dbo.Documents
+            SET
+                Status = ?
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            "Analyzed",
+            document_id
+        ))
+
+        conn.commit()
+
+        flash(
+            "Document re-analyzed successfully.",
+            "success"
+        )
+
+    except Exception as exc:
+
+        try:
+
+            if conn and cursor:
+
+                cursor.execute("""
+                    UPDATE dbo.Documents
+                    SET
+                        Status = ?
+                    WHERE
+                        DocumentID = ?;
+                """,
+                (
+                    "Processing Failed",
+                    document_id
+                ))
+
+                conn.commit()
+
+        except Exception:
+            pass
+
+        flash(
+            f"Re-analysis failed: {str(exc)}",
+            "error"
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    return redirect(
+        url_for(
+            "view_analysis",
+            document_id=document_id
+        )
+    )
+
+
+# ============================================================
+# Download Original Document
+# ============================================================
+
+@app.route(
+    "/document/<int:document_id>/download"
+)
+def download_document(document_id):
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                FileName,
+                BlobName
+            FROM dbo.Documents
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+            return "Document not found.", 404
+
+        filename = row[0]
+        blob_name = row[1]
+
+        blob_service_client = (
+            get_blob_service_client()
+        )
+
+        blob_client = (
+            blob_service_client
+            .get_blob_client(
+                container=STORAGE_CONTAINER_NAME,
+                blob=blob_name
+            )
+        )
+
+        file_data = (
+            blob_client
+            .download_blob()
+            .readall()
+        )
+
+        return send_file(
+            io.BytesIO(file_data),
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as exc:
+
+        return (
+            f"Download failed: {str(exc)}",
+            500
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# Delete Document
+# ============================================================
+
+@app.route(
+    "/document/<int:document_id>/delete",
+    methods=["POST"]
+)
+def delete_document(document_id):
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                FileName,
+                BlobName
+            FROM dbo.Documents
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+
+            flash(
+                "Document not found.",
+                "error"
+            )
+
+            return redirect(
+                url_for("index")
+            )
+
+        filename = row[0]
+        blob_name = row[1]
+
+        # Delete the Blob first
+        blob_service_client = (
+            get_blob_service_client()
+        )
+
+        blob_client = (
+            blob_service_client
+            .get_blob_client(
+                container=STORAGE_CONTAINER_NAME,
+                blob=blob_name
+            )
+        )
+
+        blob_client.delete_blob(
+            delete_snapshots="include"
+        )
+
+        # Delete child analysis record first
+        cursor.execute("""
+            DELETE FROM dbo.DocumentAnalysis
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        # Delete document record
+        cursor.execute("""
+            DELETE FROM dbo.Documents
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        conn.commit()
+
+        flash(
+            f"{filename} was deleted.",
+            "success"
+        )
+
+    except Exception as exc:
+
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+
+        flash(
+            f"Delete failed: {str(exc)}",
+            "error"
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    return redirect(
+        url_for("index")
+    )
 
 
 # ============================================================
@@ -828,79 +1713,11 @@ def upload_document():
             )
         )
 
-        cursor.execute("""
-            INSERT INTO dbo.DocumentAnalysis
-            (
-                DocumentID,
-                Summary,
-                KeyTopics,
-                EntitiesJson,
-                TagsJson,
-                RisksJson,
-                ActionItemsJson,
-                ImportantDatesJson
-            )
-            VALUES
-            (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?
-            );
-        """,
-        (
+        save_analysis(
+            cursor,
             document_id,
-
-            analysis.get(
-                "summary"
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "key_topics",
-                    []
-                )
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "entities",
-                    []
-                )
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "tags",
-                    []
-                )
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "risks",
-                    []
-                )
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "action_items",
-                    []
-                )
-            ),
-
-            json.dumps(
-                analysis.get(
-                    "important_dates",
-                    []
-                )
-            )
-        ))
+            analysis
+        )
 
         cursor.execute("""
             UPDATE dbo.Documents
