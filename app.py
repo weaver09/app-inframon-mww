@@ -425,7 +425,7 @@ DOCUMENT:
 {text_to_analyze}
 """
 
-    response = client.chat.completions.create(
+    response = client.responses.create(
 
         model=AZURE_OPENAI_DEPLOYMENT,
 
