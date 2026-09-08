@@ -75,8 +75,16 @@
             background: #475569;
         }
 
+        .button-secondary:hover {
+            background: #334155;
+        }
+
         .button-warning {
             background: #d97706;
+        }
+
+        .button-warning:hover {
+            background: #b45309;
         }
 
         .button-danger {
@@ -276,6 +284,17 @@
             ) }}"
         >
             Download Original
+        </a>
+
+
+        <a
+            class="button"
+            href="{{ url_for(
+                'export_analysis_pdf',
+                document_id=analysis.DocumentID
+            ) }}"
+        >
+            Export PDF
         </a>
 
 

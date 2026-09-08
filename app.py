@@ -29,6 +29,17 @@ from docx import Document
 from openpyxl import load_workbook
 from pptx import Presentation
 
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle
+)
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+
 
 # ============================================================
 # Flask Application
@@ -211,6 +222,7 @@ def safe_json_loads(value):
 
     try:
         return json.loads(value)
+
     except Exception:
         return []
 
@@ -339,6 +351,7 @@ def extract_xlsx(file_data):
 
                 if value is None:
                     values.append("")
+
                 else:
                     values.append(
                         str(value)
@@ -1104,12 +1117,14 @@ def index():
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1220,12 +1235,14 @@ def view_analysis(document_id):
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1362,12 +1379,14 @@ def ask_document(document_id):
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1489,12 +1508,14 @@ def reanalyze_document(document_id):
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1504,6 +1525,532 @@ def reanalyze_document(document_id):
             document_id=document_id
         )
     )
+
+
+# ============================================================
+# Export Analysis PDF
+# ============================================================
+
+@app.route(
+    "/analysis/<int:document_id>/export/pdf"
+)
+def export_analysis_pdf(document_id):
+
+    conn = None
+    cursor = None
+
+    try:
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                d.FileName,
+                d.FileType,
+                d.UploadDate,
+                d.Status,
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
+                a.Summary,
+                a.KeyTopics,
+                a.EntitiesJson,
+                a.TagsJson,
+                a.RisksJson,
+                a.ActionItemsJson,
+                a.ImportantDatesJson,
+                a.AnalysisDate
+            FROM dbo.Documents d
+            LEFT JOIN dbo.DocumentAnalysis a
+                ON d.DocumentID = a.DocumentID
+            WHERE
+                d.DocumentID = ?;
+        """,
+        (
+            document_id,
+        ))
+
+        row = cursor.fetchone()
+
+        if not row:
+            return "Document not found.", 404
+
+        filename = row[0]
+        file_type = row[1]
+        upload_date = row[2]
+        status = row[3]
+        extracted_characters = row[4]
+        summary = row[5]
+        key_topics = safe_json_loads(row[6])
+        entities = safe_json_loads(row[7])
+        tags = safe_json_loads(row[8])
+        risks = safe_json_loads(row[9])
+        action_items = safe_json_loads(row[10])
+        important_dates = safe_json_loads(row[11])
+        analysis_date = row[12]
+
+        buffer = io.BytesIO()
+
+        pdf = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=50,
+            leftMargin=50,
+            topMargin=50,
+            bottomMargin=50,
+            title=f"{filename} - AI Analysis"
+        )
+
+        styles = getSampleStyleSheet()
+
+        story = []
+
+        # ====================================================
+        # Title
+        # ====================================================
+
+        story.append(
+            Paragraph(
+                "AI Document Analysis",
+                styles["Title"]
+            )
+        )
+
+        story.append(
+            Spacer(
+                1,
+                8
+            )
+        )
+
+        story.append(
+            Paragraph(
+                filename,
+                styles["Heading2"]
+            )
+        )
+
+        story.append(
+            Spacer(
+                1,
+                18
+            )
+        )
+
+        # ====================================================
+        # Document Metadata
+        # ====================================================
+
+        metadata = [
+            [
+                Paragraph(
+                    "<b>File</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    str(filename),
+                    styles["BodyText"]
+                )
+            ],
+            [
+                Paragraph(
+                    "<b>Type</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    str(file_type or "").upper(),
+                    styles["BodyText"]
+                )
+            ],
+            [
+                Paragraph(
+                    "<b>Status</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    str(status or ""),
+                    styles["BodyText"]
+                )
+            ],
+            [
+                Paragraph(
+                    "<b>Extracted Characters</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    f"{extracted_characters or 0:,}",
+                    styles["BodyText"]
+                )
+            ],
+            [
+                Paragraph(
+                    "<b>Uploaded</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    str(upload_date or ""),
+                    styles["BodyText"]
+                )
+            ],
+            [
+                Paragraph(
+                    "<b>Analyzed</b>",
+                    styles["BodyText"]
+                ),
+                Paragraph(
+                    str(analysis_date or "N/A"),
+                    styles["BodyText"]
+                )
+            ]
+        ]
+
+        metadata_table = Table(
+            metadata,
+            colWidths=[
+                140,
+                360
+            ]
+        )
+
+        metadata_table.setStyle(
+            TableStyle([
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (0, -1),
+                    colors.whitesmoke
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.lightgrey
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP"
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                )
+            ])
+        )
+
+        story.append(
+            metadata_table
+        )
+
+        story.append(
+            Spacer(
+                1,
+                22
+            )
+        )
+
+        # ====================================================
+        # Helper for PDF Sections
+        # ====================================================
+
+        def add_section(
+            title,
+            paragraphs
+        ):
+
+            story.append(
+                Paragraph(
+                    title,
+                    styles["Heading2"]
+                )
+            )
+
+            story.append(
+                Spacer(
+                    1,
+                    6
+                )
+            )
+
+            if not paragraphs:
+
+                story.append(
+                    Paragraph(
+                        "None identified.",
+                        styles["BodyText"]
+                    )
+                )
+
+            else:
+
+                for paragraph in paragraphs:
+
+                    story.append(
+                        Paragraph(
+                            paragraph,
+                            styles["BodyText"]
+                        )
+                    )
+
+                    story.append(
+                        Spacer(
+                            1,
+                            5
+                        )
+                    )
+
+            story.append(
+                Spacer(
+                    1,
+                    14
+                )
+            )
+
+        # ====================================================
+        # Summary
+        # ====================================================
+
+        add_section(
+            "Summary",
+            [
+                summary or "No summary available."
+            ]
+        )
+
+        # ====================================================
+        # Key Topics
+        # ====================================================
+
+        add_section(
+            "Key Topics",
+            [
+                f"• {str(topic)}"
+                for topic in key_topics
+            ]
+        )
+
+        # ====================================================
+        # Tags
+        # ====================================================
+
+        add_section(
+            "Tags",
+            [
+                ", ".join(
+                    str(tag)
+                    for tag in tags
+                )
+            ] if tags else []
+        )
+
+        # ====================================================
+        # Entities
+        # ====================================================
+
+        entity_lines = []
+
+        for entity in entities:
+
+            name = entity.get(
+                "name",
+                ""
+            )
+
+            entity_type = entity.get(
+                "type",
+                "other"
+            )
+
+            entity_lines.append(
+                f"• <b>{name}</b> ({entity_type})"
+            )
+
+        add_section(
+            "Entities",
+            entity_lines
+        )
+
+        # ====================================================
+        # Risks
+        # ====================================================
+
+        risk_lines = []
+
+        for risk in risks:
+
+            severity = risk.get(
+                "severity",
+                "Unknown"
+            )
+
+            risk_text = risk.get(
+                "risk",
+                ""
+            )
+
+            risk_lines.append(
+                f"• <b>{severity}</b>: {risk_text}"
+            )
+
+        add_section(
+            "Risks",
+            risk_lines
+        )
+
+        # ====================================================
+        # Action Items
+        # ====================================================
+
+        action_lines = []
+
+        for item in action_items:
+
+            action = item.get(
+                "action",
+                ""
+            )
+
+            owner = item.get(
+                "owner"
+            )
+
+            due_date = item.get(
+                "due_date"
+            )
+
+            line = (
+                f"• {action}"
+            )
+
+            if owner:
+                line += (
+                    f"<br/>&nbsp;&nbsp;&nbsp;"
+                    f"<b>Owner:</b> {owner}"
+                )
+
+            if due_date:
+                line += (
+                    f"<br/>&nbsp;&nbsp;&nbsp;"
+                    f"<b>Due:</b> {due_date}"
+                )
+
+            action_lines.append(
+                line
+            )
+
+        add_section(
+            "Action Items",
+            action_lines
+        )
+
+        # ====================================================
+        # Important Dates
+        # ====================================================
+
+        date_lines = []
+
+        for item in important_dates:
+
+            date_value = item.get(
+                "date",
+                ""
+            )
+
+            description = item.get(
+                "description",
+                ""
+            )
+
+            date_lines.append(
+                f"• <b>{date_value}</b>: {description}"
+            )
+
+        add_section(
+            "Important Dates",
+            date_lines
+        )
+
+        # ====================================================
+        # Footer Note
+        # ====================================================
+
+        story.append(
+            Spacer(
+                1,
+                12
+            )
+        )
+
+        story.append(
+            Paragraph(
+                "Generated by AI Document Analyzer.",
+                styles["Italic"]
+            )
+        )
+
+        pdf.build(
+            story
+        )
+
+        buffer.seek(0)
+
+        base_name = os.path.splitext(
+            filename
+        )[0]
+
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=(
+                f"{base_name}_analysis.pdf"
+            ),
+            mimetype="application/pdf"
+        )
+
+    except Exception as exc:
+
+        return (
+            f"PDF export failed: {str(exc)}",
+            500
+        )
+
+    finally:
+
+        try:
+            if cursor:
+                cursor.close()
+
+        except Exception:
+            pass
+
+        try:
+            if conn:
+                conn.close()
+
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -1579,12 +2126,14 @@ def download_document(document_id):
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1681,6 +2230,7 @@ def delete_document(document_id):
         try:
             if conn:
                 conn.rollback()
+
         except Exception:
             pass
 
@@ -1694,12 +2244,14 @@ def delete_document(document_id):
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 
@@ -1943,12 +2495,14 @@ def upload_document():
         try:
             if cursor:
                 cursor.close()
+
         except Exception:
             pass
 
         try:
             if conn:
                 conn.close()
+
         except Exception:
             pass
 

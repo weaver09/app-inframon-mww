@@ -8,3 +8,4 @@ python-docx
 openpyxl
 python-pptx
 openai
+reportlab
