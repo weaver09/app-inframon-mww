@@ -6,4 +6,5 @@ azure-storage-blob
 pypdf
 python-docx
 openpyxl
+python-pptx
 openai

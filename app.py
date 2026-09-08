@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import uuid
 import json
 
@@ -26,6 +27,7 @@ from mssql_python import connect
 from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
+from pptx import Presentation
 
 
 # ============================================================
@@ -65,7 +67,40 @@ STORAGE_CONTAINER_NAME = "documents"
 ALLOWED_EXTENSIONS = {
     "pdf",
     "docx",
-    "xlsx"
+    "xlsx",
+    "pptx",
+    "txt",
+    "csv",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "md",
+    "log",
+    "ps1",
+    "py",
+    "sql",
+    "yml",
+    "yaml",
+    "ini",
+    "config"
+}
+
+TEXT_EXTENSIONS = {
+    "txt",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "md",
+    "log",
+    "ps1",
+    "py",
+    "sql",
+    "yml",
+    "yaml",
+    "ini",
+    "config"
 }
 
 MAX_FILE_SIZE_MB = 25
@@ -178,6 +213,31 @@ def safe_json_loads(value):
         return json.loads(value)
     except Exception:
         return []
+
+
+def decode_text_file(file_data):
+
+    encodings = [
+        "utf-8-sig",
+        "utf-8",
+        "utf-16",
+        "cp1252",
+        "latin-1"
+    ]
+
+    for encoding in encodings:
+
+        try:
+            return file_data.decode(
+                encoding
+            )
+
+        except UnicodeDecodeError:
+            continue
+
+    raise RuntimeError(
+        "Unable to decode text file."
+    )
 
 
 # ============================================================
@@ -298,6 +358,102 @@ def extract_xlsx(file_data):
 
 
 # ============================================================
+# PPTX Extraction
+# ============================================================
+
+def extract_pptx(file_data):
+
+    presentation = Presentation(
+        io.BytesIO(file_data)
+    )
+
+    parts = []
+
+    for slide_number, slide in enumerate(
+        presentation.slides,
+        start=1
+    ):
+
+        parts.append(
+            f"\n--- Slide {slide_number} ---"
+        )
+
+        for shape in slide.shapes:
+
+            if hasattr(
+                shape,
+                "text"
+            ):
+
+                text = (
+                    shape.text
+                    .strip()
+                )
+
+                if text:
+                    parts.append(
+                        text
+                    )
+
+            if (
+                hasattr(shape, "has_table")
+                and shape.has_table
+            ):
+
+                for row in shape.table.rows:
+
+                    values = [
+                        cell.text.strip()
+                        for cell in row.cells
+                    ]
+
+                    parts.append(
+                        " | ".join(values)
+                    )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# CSV Extraction
+# ============================================================
+
+def extract_csv(file_data):
+
+    text = decode_text_file(
+        file_data
+    )
+
+    reader = csv.reader(
+        io.StringIO(text)
+    )
+
+    parts = []
+
+    for row in reader:
+
+        parts.append(
+            " | ".join(
+                str(value)
+                for value in row
+            )
+        )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# Plain Text Extraction
+# ============================================================
+
+def extract_text_file(file_data):
+
+    return decode_text_file(
+        file_data
+    )
+
+
+# ============================================================
 # Extract Content
 # ============================================================
 
@@ -324,6 +480,21 @@ def extract_content(
 
     if extension == "xlsx":
         return extract_xlsx(
+            file_data
+        )
+
+    if extension == "pptx":
+        return extract_pptx(
+            file_data
+        )
+
+    if extension == "csv":
+        return extract_csv(
+            file_data
+        )
+
+    if extension in TEXT_EXTENSIONS:
+        return extract_text_file(
             file_data
         )
 
@@ -593,9 +764,7 @@ def save_analysis(
                 DocumentID = ?;
         """,
         (
-            analysis.get(
-                "summary"
-            ),
+            analysis.get("summary"),
 
             json.dumps(
                 analysis.get(
@@ -671,9 +840,7 @@ def save_analysis(
         (
             document_id,
 
-            analysis.get(
-                "summary"
-            ),
+            analysis.get("summary"),
 
             json.dumps(
                 analysis.get(
@@ -768,10 +935,6 @@ def index():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # ====================================================
-        # Dashboard Statistics
-        # ====================================================
-
         cursor.execute("""
             SELECT
                 COUNT(*) AS TotalDocuments,
@@ -839,10 +1002,6 @@ def index():
                 "DOCXDocuments": row[5] or 0,
                 "XLSXDocuments": row[6] or 0
             }
-
-        # ====================================================
-        # Document Search
-        # ====================================================
 
         sql = """
             SELECT
@@ -961,7 +1120,8 @@ def index():
         stats=stats,
         search_text=search_text,
         file_type=file_type,
-        status_filter=status_filter
+        status_filter=status_filter,
+        allowed_extensions=sorted(ALLOWED_EXTENSIONS)
     )
 
 
@@ -1249,7 +1409,6 @@ def reanalyze_document(document_id):
         extracted_text = row[0]
 
         if not extracted_text:
-
             raise RuntimeError(
                 "This document has no extracted text."
             )
@@ -1476,7 +1635,6 @@ def delete_document(document_id):
         filename = row[0]
         blob_name = row[1]
 
-        # Delete the Blob first
         blob_service_client = (
             get_blob_service_client()
         )
@@ -1493,7 +1651,6 @@ def delete_document(document_id):
             delete_snapshots="include"
         )
 
-        # Delete child analysis record first
         cursor.execute("""
             DELETE FROM dbo.DocumentAnalysis
             WHERE
@@ -1503,7 +1660,6 @@ def delete_document(document_id):
             document_id,
         ))
 
-        # Delete document record
         cursor.execute("""
             DELETE FROM dbo.Documents
             WHERE
@@ -1591,9 +1747,7 @@ def upload_document():
     ):
 
         flash(
-            "Unsupported file type. "
-            "Only PDF, DOCX, and XLSX "
-            "files are allowed.",
+            "Unsupported file type.",
             "error"
         )
 
@@ -1690,6 +1844,11 @@ def upload_document():
                 file_data
             )
         )
+
+        if not extracted_text.strip():
+            raise RuntimeError(
+                "No readable text could be extracted from this file."
+            )
 
         cursor.execute("""
             UPDATE dbo.Documents
