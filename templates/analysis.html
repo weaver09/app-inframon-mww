@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>{{ analysis.FileName }} - Analysis</title>
+
+    <style>
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            color: #1f2937;
+        }
+
+        .header {
+            background: #111827;
+            color: white;
+            padding: 24px 32px;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        .header p {
+            margin: 6px 0 0 0;
+            color: #cbd5e1;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 24px;
+            margin-bottom: 22px;
+            box-shadow: 0 2px 6px rgba(0,0,0,.08);
+        }
+
+        .back-button {
+            background: #374151;
+            color: white;
+            padding: 10px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            display: inline-block;
+            margin-bottom: 20px;
+        }
+
+        .tag {
+            display: inline-block;
+            background: #e0e7ff;
+            color: #3730a3;
+            padding: 6px 10px;
+            border-radius: 14px;
+            margin: 3px;
+            font-size: 13px;
+        }
+
+        .topic {
+            display: inline-block;
+            background: #dbeafe;
+            color: #1d4ed8;
+            padding: 6px 10px;
+            border-radius: 14px;
+            margin: 3px;
+            font-size: 13px;
+        }
+
+        .entity {
+            padding: 8px 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .entity:last-child {
+            border-bottom: none;
+        }
+
+        .risk-high {
+            border-left: 4px solid #dc2626;
+            padding-left: 12px;
+            margin-bottom: 12px;
+        }
+
+        .risk-medium {
+            border-left: 4px solid #f59e0b;
+            padding-left: 12px;
+            margin-bottom: 12px;
+        }
+
+        .risk-low {
+            border-left: 4px solid #16a34a;
+            padding-left: 12px;
+            margin-bottom: 12px;
+        }
+
+        .item {
+            padding: 10px 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .item:last-child {
+            border-bottom: none;
+        }
+
+        .label {
+            color: #64748b;
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .summary {
+            line-height: 1.6;
+        }
+
+        .metadata {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+        }
+
+        .metadata-box {
+            background: #f8fafc;
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="header">
+
+    <h1>Document Analysis</h1>
+
+    <p>{{ analysis.FileName }}</p>
+
+</div>
+
+
+<div class="container">
+
+    <a
+        class="back-button"
+        href="{{ url_for('index') }}"
+    >
+        ← Back to Documents
+    </a>
+
+
+    <div class="card">
+
+        <h2>Document Information</h2>
+
+        <div class="metadata">
+
+            <div class="metadata-box">
+                <div class="label">File</div>
+                {{ analysis.FileName }}
+            </div>
+
+            <div class="metadata-box">
+                <div class="label">Type</div>
+                {{ analysis.FileType|upper }}
+            </div>
+
+            <div class="metadata-box">
+                <div class="label">Status</div>
+                {{ analysis.Status }}
+            </div>
+
+            <div class="metadata-box">
+                <div class="label">Extracted Characters</div>
+                {{ analysis.ExtractedCharacters or 0 }}
+            </div>
+
+            <div class="metadata-box">
+                <div class="label">Uploaded</div>
+                {{ analysis.UploadDate }}
+            </div>
+
+            <div class="metadata-box">
+                <div class="label">Analyzed</div>
+                {{ analysis.AnalysisDate or "N/A" }}
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Summary</h2>
+
+        <div class="summary">
+            {{ analysis.Summary or "No summary available." }}
+        </div>
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Key Topics</h2>
+
+        {% if analysis.KeyTopics %}
+
+            {% for topic in analysis.KeyTopics %}
+
+                <span class="topic">
+                    {{ topic }}
+                </span>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No key topics identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Tags</h2>
+
+        {% if analysis.Tags %}
+
+            {% for tag in analysis.Tags %}
+
+                <span class="tag">
+                    {{ tag }}
+                </span>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No tags identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Entities</h2>
+
+        {% if analysis.Entities %}
+
+            {% for entity in analysis.Entities %}
+
+                <div class="entity">
+
+                    <strong>
+                        {{ entity.name }}
+                    </strong>
+
+                    {% if entity.type %}
+
+                        <span class="label">
+                            — {{ entity.type }}
+                        </span>
+
+                    {% endif %}
+
+                </div>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No entities identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Risks</h2>
+
+        {% if analysis.Risks %}
+
+            {% for risk in analysis.Risks %}
+
+                {% set severity = risk.severity|lower %}
+
+                <div class="risk-{{ severity }}">
+
+                    <strong>
+                        {{ risk.severity or "Unknown" }}
+                    </strong>
+
+                    <div>
+                        {{ risk.risk }}
+                    </div>
+
+                </div>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No risks identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Action Items</h2>
+
+        {% if analysis.ActionItems %}
+
+            {% for item in analysis.ActionItems %}
+
+                <div class="item">
+
+                    <strong>
+                        {{ item.action }}
+                    </strong>
+
+                    {% if item.owner %}
+
+                        <div>
+                            <span class="label">
+                                Owner:
+                            </span>
+
+                            {{ item.owner }}
+                        </div>
+
+                    {% endif %}
+
+                    {% if item.due_date %}
+
+                        <div>
+                            <span class="label">
+                                Due:
+                            </span>
+
+                            {{ item.due_date }}
+                        </div>
+
+                    {% endif %}
+
+                </div>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No action items identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+    <div class="card">
+
+        <h2>Important Dates</h2>
+
+        {% if analysis.ImportantDates %}
+
+            {% for item in analysis.ImportantDates %}
+
+                <div class="item">
+
+                    <strong>
+                        {{ item.date }}
+                    </strong>
+
+                    <div>
+                        {{ item.description }}
+                    </div>
+
+                </div>
+
+            {% endfor %}
+
+        {% else %}
+
+            <p>No important dates identified.</p>
+
+        {% endif %}
+
+    </div>
+
+
+</div>
+
+</body>
+
+</html>
