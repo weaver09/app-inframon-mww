@@ -26,82 +26,24 @@ jobs:
 
 
       # ============================================================
-      # Verify WebJob Structure
+      # Verify Required Files
       # ============================================================
 
-      - name: Verify WebJob structure
+      - name: Verify application files
         run: |
-          echo "Checking WebJob..."
-
+          test -f app.py
+          test -f document_processing.py
+          test -f requirements.txt
           test -f App_Data/jobs/continuous/document-worker/run.py
 
-          find App_Data -type f -print
-
-
-      # ============================================================
-      # Build Deployment Folder
-      # ============================================================
-
-      - name: Build deployment package
-        run: |
-          rm -rf deployment
-          mkdir -p deployment
-
-          echo "Copying application files..."
-
-          cp app.py deployment/
-          cp document_processing.py deployment/
-          cp requirements.txt deployment/
-
-          cp -R templates deployment/templates
-          cp -R App_Data deployment/App_Data
-
-          if [ -d static ]; then
-            cp -R static deployment/static
-          fi
-
-
-      # ============================================================
-      # Verify Deployment Contents
-      # ============================================================
-
-      - name: Verify deployment contents
-        run: |
-          echo "Deployment files:"
-
-          find deployment -maxdepth 6 -type f | sort
-
+          echo "Application files verified."
           echo ""
-          echo "Checking Flask app..."
-          test -f deployment/app.py
-
-          echo ""
-          echo "Checking requirements..."
-          test -f deployment/requirements.txt
-
-          echo ""
-          echo "Checking WebJob..."
-          test -f deployment/App_Data/jobs/continuous/document-worker/run.py
+          echo "WebJob files:"
+          find App_Data/jobs/continuous/document-worker -type f -print
 
 
       # ============================================================
-      # Create ZIP Package
-      # ============================================================
-
-      - name: Create deployment ZIP
-        run: |
-          cd deployment
-
-          zip -r ../deployment.zip .
-
-          cd ..
-
-          echo "Deployment ZIP created:"
-          ls -lh deployment.zip
-
-
-      # ============================================================
-      # Login to Azure
+      # Login to Azure using OIDC
       # ============================================================
 
       - name: Login to Azure
@@ -113,37 +55,82 @@ jobs:
 
 
       # ============================================================
-      # Configure App Service
+      # Deploy Main Flask Application
       #
-      # Oryx MUST build requirements.txt.
+      # This is the deployment method that was working before.
+      # Oryx installs requirements.txt because
+      # SCM_DO_BUILD_DURING_DEPLOYMENT=true.
       # ============================================================
 
-      - name: Configure deployment settings
+      - name: Deploy main application
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: app-inframon-mww
+          slot-name: Production
+          package: .
+
+
+      # ============================================================
+      # Package WebJob Only
+      #
+      # run.py must be at the ROOT of the WebJob ZIP.
+      # ============================================================
+
+      - name: Package WebJob
         run: |
-          az webapp config appsettings set \
+          rm -f document-worker.zip
+
+          cd App_Data/jobs/continuous/document-worker
+
+          zip -r "$GITHUB_WORKSPACE/document-worker.zip" .
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo "WebJob package:"
+          unzip -l document-worker.zip
+
+
+      # ============================================================
+      # Deploy Continuous WebJob
+      #
+      # Uses Microsoft Entra token from the OIDC Azure login.
+      # This does NOT redeploy or overwrite the Flask application.
+      # ============================================================
+
+      - name: Deploy document-worker WebJob
+        run: |
+          TOKEN=$(az account get-access-token \
+            --query accessToken \
+            --output tsv)
+
+          curl \
+            --fail-with-body \
+            --show-error \
+            --silent \
+            --request PUT \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/zip" \
+            --data-binary "@document-worker.zip" \
+            "https://app-inframon-mww.scm.azurewebsites.net/api/continuouswebjobs/document-worker"
+
+          echo ""
+          echo "WebJob uploaded successfully."
+
+
+      # ============================================================
+      # Start Continuous WebJob
+      # ============================================================
+
+      - name: Start document-worker WebJob
+        run: |
+          az webapp webjob continuous start \
             --resource-group rg-inframon-lab \
             --name app-inframon-mww \
-            --settings \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-              WEBSITE_SKIP_RUNNING_KUDUAGENT=false \
-              WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
+            --webjob-name document-worker
 
 
       # ============================================================
-      # Deploy Application + WebJob
-      # ============================================================
-
-      - name: Deploy application package
-        run: |
-          az webapp deploy \
-            --resource-group rg-inframon-lab \
-            --name app-inframon-mww \
-            --src-path deployment.zip \
-            --type zip
-
-
-      # ============================================================
-      # Verify WebJob
+      # Verify Continuous WebJobs
       # ============================================================
 
       - name: List continuous WebJobs
