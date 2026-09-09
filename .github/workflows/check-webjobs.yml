@@ -1,0 +1,42 @@
+name: Check WebJobs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_EC80AB545A2D40D2A55F61019D86F9E4 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D5A108B762904E43983C7CACFCB45BEE }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_3895FF762904E43983C7CACFCB45BEE }}
+
+      - name: Check discovered WebJobs
+        run: |
+          DEFAULT_HOSTNAME=$(az webapp show \
+            --resource-group rg-inframon-lab \
+            --name app-inframon-mww \
+            --query defaultHostName \
+            --output tsv)
+
+          APP_PREFIX="${DEFAULT_HOSTNAME%%.*}"
+          REGION_HOST="${DEFAULT_HOSTNAME#*.}"
+          SCM_HOSTNAME="${APP_PREFIX}.scm.${REGION_HOST}"
+
+          TOKEN=$(az account get-access-token \
+            --query accessToken \
+            --output tsv)
+
+          curl \
+            --fail-with-body \
+            --show-error \
+            --header "Authorization: Bearer $TOKEN" \
+            "https://${SCM_HOSTNAME}/api/continuouswebjobs"
