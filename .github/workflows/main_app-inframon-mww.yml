@@ -26,20 +26,105 @@ jobs:
 
 
       # ============================================================
-      # Verify WebJob Exists
+      # Setup Python
       # ============================================================
 
-      - name: Verify WebJob files
-        run: |
-          echo "Checking WebJob structure..."
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-          find App_Data -type f -print
+
+      # ============================================================
+      # Verify WebJob
+      # ============================================================
+
+      - name: Verify WebJob structure
+        run: |
+          echo "Checking WebJob..."
 
           test -f App_Data/jobs/continuous/document-worker/run.py
 
+          find App_Data -type f -print
+
 
       # ============================================================
-      # Login to Azure using OIDC
+      # Build Deployment Folder
+      # ============================================================
+
+      - name: Build deployment package
+        run: |
+          rm -rf deployment
+          mkdir -p deployment
+
+          echo "Copying application files..."
+
+          cp app.py deployment/
+          cp document_processing.py deployment/
+          cp requirements.txt deployment/
+
+          cp -R templates deployment/templates
+          cp -R App_Data deployment/App_Data
+
+          if [ -d static ]; then
+            cp -R static deployment/static
+          fi
+
+
+      # ============================================================
+      # Install Dependencies Into Deployment Package
+      # ============================================================
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          mkdir -p deployment/.python_packages/lib/site-packages
+
+          pip install \
+            -r requirements.txt \
+            --target deployment/.python_packages/lib/site-packages
+
+
+      # ============================================================
+      # Verify Deployment Contents
+      # ============================================================
+
+      - name: Verify deployment contents
+        run: |
+          echo "Deployment files:"
+
+          find deployment -maxdepth 6 -type f | sort
+
+          echo ""
+          echo "Checking Flask app..."
+
+          test -f deployment/app.py
+
+          echo ""
+          echo "Checking WebJob..."
+
+          test -f deployment/App_Data/jobs/continuous/document-worker/run.py
+
+
+      # ============================================================
+      # Create ZIP Package
+      # ============================================================
+
+      - name: Create deployment ZIP
+        run: |
+          cd deployment
+
+          zip -r ../deployment.zip .
+
+          cd ..
+
+          echo "Deployment ZIP created:"
+          ls -lh deployment.zip
+
+
+      # ============================================================
+      # Azure Login
       # ============================================================
 
       - name: Login to Azure
@@ -51,41 +136,40 @@ jobs:
 
 
       # ============================================================
-      # Deploy Main Application
+      # Disable Azure/Oryx Build
       #
-      # Azure App Service / Oryx installs requirements.txt.
+      # Dependencies were already installed above by GitHub.
       # ============================================================
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: app-inframon-mww
-          slot-name: Production
-          package: .
+      - name: Configure deployment settings
+        run: |
+          az webapp config appsettings set \
+            --resource-group rg-inframon-lab \
+            --name app-inframon-mww \
+            --settings \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              WEBSITE_SKIP_RUNNING_KUDUAGENT=false \
+              WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
 
 
       # ============================================================
-      # Deploy WebJob Files Explicitly
-      #
-      # Put run.py directly in the WebJobs discovery location.
+      # Deploy Entire Application + WebJob
       # ============================================================
 
-      - name: Deploy WebJob
+      - name: Deploy application package
         run: |
           az webapp deploy \
             --resource-group rg-inframon-lab \
             --name app-inframon-mww \
-            --type static \
-            --src-path App_Data/jobs/continuous/document-worker/run.py \
-            --target-path App_Data/jobs/continuous/document-worker/run.py \
-            --restart false
+            --src-path deployment.zip \
+            --type zip
 
 
       # ============================================================
-      # Verify Azure Sees Continuous WebJobs
+      # Verify WebJob
       # ============================================================
 
-      - name: List WebJobs
+      - name: List continuous WebJobs
         run: |
           az webapp webjob continuous list \
             --resource-group rg-inframon-lab \
