@@ -26,24 +26,7 @@ jobs:
 
 
       # ============================================================
-      # Verify Required Files
-      # ============================================================
-
-      - name: Verify application files
-        run: |
-          test -f app.py
-          test -f document_processing.py
-          test -f requirements.txt
-          test -f App_Data/jobs/continuous/document-worker/run.py
-
-          echo "Application files verified."
-          echo ""
-          echo "WebJob files:"
-          find App_Data/jobs/continuous/document-worker -type f -print
-
-
-      # ============================================================
-      # Login to Azure
+      # Login to Azure using OIDC
       # ============================================================
 
       - name: Login to Azure
@@ -55,109 +38,15 @@ jobs:
 
 
       # ============================================================
-      # Deploy Main Flask Application
+      # Deploy Application
+      #
+      # Azure App Service / Oryx will install requirements.txt
+      # because SCM_DO_BUILD_DURING_DEPLOYMENT=true.
       # ============================================================
 
-      - name: Deploy main application
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: app-inframon-mww
           slot-name: Production
           package: .
-
-
-      # ============================================================
-      # Package WebJob
-      #
-      # run.py will be at the root of the ZIP.
-      # ============================================================
-
-      - name: Package WebJob
-        run: |
-          rm -f document-worker.zip
-
-          cd App_Data/jobs/continuous/document-worker
-
-          zip -r "$GITHUB_WORKSPACE/document-worker.zip" .
-
-          cd "$GITHUB_WORKSPACE"
-
-          echo ""
-          echo "WebJob package contents:"
-          unzip -l document-worker.zip
-
-
-      # ============================================================
-      # Determine SCM Hostname
-      # ============================================================
-
-      - name: Determine SCM hostname
-        run: |
-          DEFAULT_HOSTNAME=$(az webapp show \
-            --resource-group rg-inframon-lab \
-            --name app-inframon-mww \
-            --query defaultHostName \
-            --output tsv)
-
-          APP_PREFIX="${DEFAULT_HOSTNAME%%.*}"
-          REGION_HOST="${DEFAULT_HOSTNAME#*.}"
-
-          SCM_HOSTNAME="${APP_PREFIX}.scm.${REGION_HOST}"
-
-          echo "App hostname: $DEFAULT_HOSTNAME"
-          echo "SCM hostname: $SCM_HOSTNAME"
-
-          echo "SCM_HOSTNAME=$SCM_HOSTNAME" >> "$GITHUB_ENV"
-
-
-      # ============================================================
-      # Deploy Continuous WebJob
-      #
-      # Upload ZIP directly into:
-      # App_Data/jobs/continuous/document-worker
-      # ============================================================
-
-      - name: Deploy document-worker WebJob
-        run: |
-          TOKEN=$(az account get-access-token \
-            --query accessToken \
-            --output tsv)
-
-          echo "Uploading document-worker.zip..."
-
-          curl \
-            --fail-with-body \
-            --show-error \
-            --request PUT \
-            --header "Authorization: Bearer $TOKEN" \
-            --header "Content-Type: application/zip" \
-            --header "Content-Disposition: attachment; filename=document-worker.zip" \
-            --data-binary "@document-worker.zip" \
-            "https://${SCM_HOSTNAME}/api/zip/site/wwwroot/App_Data/jobs/continuous/document-worker/"
-
-          echo ""
-          echo "WebJob files uploaded successfully."
-
-
-      # ============================================================
-      # Start Continuous WebJob
-      # ============================================================
-
-      - name: Start document-worker WebJob
-        run: |
-          az webapp webjob continuous start \
-            --resource-group rg-inframon-lab \
-            --name app-inframon-mww \
-            --webjob-name document-worker
-
-
-      # ============================================================
-      # Verify Continuous WebJobs
-      # ============================================================
-
-      - name: List continuous WebJobs
-        run: |
-          az webapp webjob continuous list \
-            --resource-group rg-inframon-lab \
-            --name app-inframon-mww \
-            --output table

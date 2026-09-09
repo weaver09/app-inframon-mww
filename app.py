@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import uuid
 import json
 
@@ -15,8 +16,20 @@ from flask import (
 
 from werkzeug.utils import secure_filename
 
-from reportlab.lib.pagesizes import letter
+from azure.identity import (
+    DefaultAzureCredential,
+    get_bearer_token_provider
+)
 
+from azure.storage.blob import BlobServiceClient
+from openai import OpenAI
+from mssql_python import connect
+from pypdf import PdfReader
+from docx import Document
+from openpyxl import load_workbook
+from pptx import Presentation
+
+from reportlab.lib.pagesizes import letter
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -24,25 +37,8 @@ from reportlab.platypus import (
     Table,
     TableStyle
 )
-
 from reportlab.lib import colors
-
-from reportlab.lib.styles import (
-    getSampleStyleSheet
-)
-
-from document_processing import (
-    ALLOWED_EXTENSIONS,
-    STORAGE_CONTAINER_NAME,
-    allowed_file,
-    safe_json_loads,
-    get_db_connection,
-    get_blob_service_client,
-    get_openai_client,
-    ask_document_with_ai,
-    analyze_document_with_ai,
-    save_analysis
-)
+from reportlab.lib.styles import getSampleStyleSheet
 
 
 # ============================================================
@@ -56,11 +52,851 @@ app.secret_key = os.getenv(
     "change-this-later"
 )
 
+
+# ============================================================
+# Configuration
+# ============================================================
+
+SQL_CONNECTION_STRING = os.getenv(
+    "AZURE_SQL_CONNECTIONSTRING"
+)
+
+STORAGE_ACCOUNT_NAME = os.getenv(
+    "AZURE_STORAGE_ACCOUNT"
+)
+
+AZURE_OPENAI_ENDPOINT = os.getenv(
+    "AZURE_OPENAI_ENDPOINT"
+)
+
+AZURE_OPENAI_DEPLOYMENT = os.getenv(
+    "AZURE_OPENAI_DEPLOYMENT"
+)
+
+STORAGE_CONTAINER_NAME = "documents"
+
+ALLOWED_EXTENSIONS = {
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "txt",
+    "csv",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "md",
+    "log",
+    "ps1",
+    "py",
+    "sql",
+    "yml",
+    "yaml",
+    "ini",
+    "config"
+}
+
+TEXT_EXTENSIONS = {
+    "txt",
+    "json",
+    "xml",
+    "html",
+    "htm",
+    "md",
+    "log",
+    "ps1",
+    "py",
+    "sql",
+    "yml",
+    "yaml",
+    "ini",
+    "config"
+}
+
 MAX_FILE_SIZE_MB = 25
 
 app.config["MAX_CONTENT_LENGTH"] = (
     MAX_FILE_SIZE_MB * 1024 * 1024
 )
+
+
+# ============================================================
+# Database Connection
+# ============================================================
+
+def get_db_connection():
+
+    if not SQL_CONNECTION_STRING:
+        raise RuntimeError(
+            "AZURE_SQL_CONNECTIONSTRING environment variable "
+            "is not configured."
+        )
+
+    return connect(
+        SQL_CONNECTION_STRING
+    )
+
+
+# ============================================================
+# Azure Credential
+# ============================================================
+
+def get_azure_credential():
+
+    return DefaultAzureCredential()
+
+
+# ============================================================
+# Azure Blob Storage
+# ============================================================
+
+def get_blob_service_client():
+
+    if not STORAGE_ACCOUNT_NAME:
+        raise RuntimeError(
+            "AZURE_STORAGE_ACCOUNT environment variable "
+            "is not configured."
+        )
+
+    account_url = (
+        f"https://{STORAGE_ACCOUNT_NAME}.blob.core.windows.net"
+    )
+
+    credential = get_azure_credential()
+
+    return BlobServiceClient(
+        account_url=account_url,
+        credential=credential
+    )
+
+
+# ============================================================
+# Azure OpenAI / Foundry
+# ============================================================
+
+def get_openai_client():
+
+    if not AZURE_OPENAI_ENDPOINT:
+        raise RuntimeError(
+            "AZURE_OPENAI_ENDPOINT environment variable "
+            "is not configured."
+        )
+
+    if not AZURE_OPENAI_DEPLOYMENT:
+        raise RuntimeError(
+            "AZURE_OPENAI_DEPLOYMENT environment variable "
+            "is not configured."
+        )
+
+    credential = DefaultAzureCredential()
+
+    token_provider = get_bearer_token_provider(
+        credential,
+        "https://cognitiveservices.azure.com/.default"
+    )
+
+    return OpenAI(
+        base_url=AZURE_OPENAI_ENDPOINT,
+        api_key=token_provider
+    )
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def allowed_file(filename):
+
+    return (
+        "." in filename
+        and filename.rsplit(".", 1)[1].lower()
+        in ALLOWED_EXTENSIONS
+    )
+
+
+def safe_json_loads(value):
+
+    if not value:
+        return []
+
+    try:
+        return json.loads(value)
+
+    except Exception:
+        return []
+
+
+def decode_text_file(file_data):
+
+    encodings = [
+        "utf-8-sig",
+        "utf-8",
+        "utf-16",
+        "cp1252",
+        "latin-1"
+    ]
+
+    for encoding in encodings:
+
+        try:
+            return file_data.decode(
+                encoding
+            )
+
+        except UnicodeDecodeError:
+            continue
+
+    raise RuntimeError(
+        "Unable to decode text file."
+    )
+
+
+# ============================================================
+# PDF Extraction
+# ============================================================
+
+def extract_pdf(file_data):
+
+    reader = PdfReader(
+        io.BytesIO(file_data)
+    )
+
+    parts = []
+
+    for page_number, page in enumerate(
+        reader.pages,
+        start=1
+    ):
+
+        text = page.extract_text() or ""
+
+        if text.strip():
+            parts.append(
+                f"\n--- Page {page_number} ---\n{text}"
+            )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# DOCX Extraction
+# ============================================================
+
+def extract_docx(file_data):
+
+    document = Document(
+        io.BytesIO(file_data)
+    )
+
+    parts = []
+
+    for paragraph in document.paragraphs:
+
+        text = paragraph.text.strip()
+
+        if text:
+            parts.append(text)
+
+    for table_index, table in enumerate(
+        document.tables,
+        start=1
+    ):
+
+        parts.append(
+            f"\n--- Table {table_index} ---"
+        )
+
+        for row in table.rows:
+
+            values = [
+                cell.text.strip()
+                for cell in row.cells
+            ]
+
+            parts.append(
+                " | ".join(values)
+            )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# XLSX Extraction
+# ============================================================
+
+def extract_xlsx(file_data):
+
+    workbook = load_workbook(
+        io.BytesIO(file_data),
+        read_only=True,
+        data_only=True
+    )
+
+    parts = []
+
+    for worksheet in workbook.worksheets:
+
+        parts.append(
+            f"\n--- Worksheet: {worksheet.title} ---"
+        )
+
+        for row in worksheet.iter_rows(
+            values_only=True
+        ):
+
+            values = []
+
+            for value in row:
+
+                if value is None:
+                    values.append("")
+
+                else:
+                    values.append(
+                        str(value)
+                    )
+
+            if any(
+                value.strip()
+                for value in values
+            ):
+                parts.append(
+                    " | ".join(values)
+                )
+
+    workbook.close()
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# PPTX Extraction
+# ============================================================
+
+def extract_pptx(file_data):
+
+    presentation = Presentation(
+        io.BytesIO(file_data)
+    )
+
+    parts = []
+
+    for slide_number, slide in enumerate(
+        presentation.slides,
+        start=1
+    ):
+
+        parts.append(
+            f"\n--- Slide {slide_number} ---"
+        )
+
+        for shape in slide.shapes:
+
+            if hasattr(
+                shape,
+                "text"
+            ):
+
+                text = (
+                    shape.text
+                    .strip()
+                )
+
+                if text:
+                    parts.append(
+                        text
+                    )
+
+            if (
+                hasattr(shape, "has_table")
+                and shape.has_table
+            ):
+
+                for row in shape.table.rows:
+
+                    values = [
+                        cell.text.strip()
+                        for cell in row.cells
+                    ]
+
+                    parts.append(
+                        " | ".join(values)
+                    )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# CSV Extraction
+# ============================================================
+
+def extract_csv(file_data):
+
+    text = decode_text_file(
+        file_data
+    )
+
+    reader = csv.reader(
+        io.StringIO(text)
+    )
+
+    parts = []
+
+    for row in reader:
+
+        parts.append(
+            " | ".join(
+                str(value)
+                for value in row
+            )
+        )
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# Plain Text Extraction
+# ============================================================
+
+def extract_text_file(file_data):
+
+    return decode_text_file(
+        file_data
+    )
+
+
+# ============================================================
+# Extract Content
+# ============================================================
+
+def extract_content(
+    filename,
+    file_data
+):
+
+    extension = (
+        filename
+        .lower()
+        .rsplit(".", 1)[-1]
+    )
+
+    if extension == "pdf":
+        return extract_pdf(
+            file_data
+        )
+
+    if extension == "docx":
+        return extract_docx(
+            file_data
+        )
+
+    if extension == "xlsx":
+        return extract_xlsx(
+            file_data
+        )
+
+    if extension == "pptx":
+        return extract_pptx(
+            file_data
+        )
+
+    if extension == "csv":
+        return extract_csv(
+            file_data
+        )
+
+    if extension in TEXT_EXTENSIONS:
+        return extract_text_file(
+            file_data
+        )
+
+    raise ValueError(
+        f"Unsupported file type: {extension}"
+    )
+
+
+# ============================================================
+# AI Document Analysis
+# ============================================================
+
+def analyze_document_with_ai(
+    extracted_text
+):
+
+    if not extracted_text:
+        raise RuntimeError(
+            "No extracted text was available "
+            "for AI analysis."
+        )
+
+    client = get_openai_client()
+
+    max_characters = 60000
+
+    text_to_analyze = (
+        extracted_text[:max_characters]
+    )
+
+    system_message = """
+You are an AI document analysis system.
+
+Analyze documents accurately and conservatively.
+
+Do not invent information.
+
+Return only valid JSON.
+
+If information is not present in the document,
+use an empty array or null value where appropriate.
+"""
+
+    user_message = f"""
+Analyze the following document.
+
+Return ONLY valid JSON using exactly this structure:
+
+{{
+    "summary": "Concise but useful document summary",
+
+    "key_topics": [
+        "topic"
+    ],
+
+    "entities": [
+        {{
+            "name": "entity name",
+            "type": "person|organization|product|location|system|other"
+        }}
+    ],
+
+    "tags": [
+        "tag"
+    ],
+
+    "risks": [
+        {{
+            "risk": "risk description",
+            "severity": "Low|Medium|High"
+        }}
+    ],
+
+    "action_items": [
+        {{
+            "action": "action description",
+            "owner": null,
+            "due_date": null
+        }}
+    ],
+
+    "important_dates": [
+        {{
+            "date": "YYYY-MM-DD or original date text",
+            "description": "why this date matters"
+        }}
+    ]
+}}
+
+Rules:
+
+1. Do not invent facts.
+2. Summary should be factual and useful.
+3. Key topics should identify major themes.
+4. Entities should identify important people,
+   organizations, systems, products, and locations.
+5. Tags should be short and useful for searching.
+6. Risks must be supported by the document.
+7. If no risks exist, return an empty array.
+8. Action items must come from explicit or strongly
+   implied tasks in the document.
+9. Preserve owners when explicitly stated.
+10. Preserve due dates when explicitly stated.
+11. If no action items exist, return an empty array.
+12. Important dates should only include meaningful dates.
+13. If no important dates exist, return an empty array.
+
+DOCUMENT:
+
+{text_to_analyze}
+"""
+
+    response = client.responses.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        input=[
+            {
+                "role": "system",
+                "content": system_message
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ]
+    )
+
+    content = response.output_text
+
+    if not content:
+        raise RuntimeError(
+            "Azure OpenAI returned an empty response."
+        )
+
+    try:
+        analysis = json.loads(
+            content
+        )
+
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Azure OpenAI returned invalid JSON."
+        ) from exc
+
+    analysis.setdefault("summary", "")
+    analysis.setdefault("key_topics", [])
+    analysis.setdefault("entities", [])
+    analysis.setdefault("tags", [])
+    analysis.setdefault("risks", [])
+    analysis.setdefault("action_items", [])
+    analysis.setdefault("important_dates", [])
+
+    return analysis
+
+
+# ============================================================
+# Ask Document
+# ============================================================
+
+def ask_document_with_ai(
+    extracted_text,
+    question
+):
+
+    if not extracted_text:
+        raise RuntimeError(
+            "No extracted text is available."
+        )
+
+    if not question:
+        raise RuntimeError(
+            "A question is required."
+        )
+
+    client = get_openai_client()
+
+    max_characters = 60000
+
+    text_to_analyze = (
+        extracted_text[:max_characters]
+    )
+
+    system_message = """
+You answer questions about a supplied document.
+
+Only use information contained in the document.
+
+Do not invent facts.
+
+If the answer cannot be determined from the document,
+say that clearly.
+
+Provide a concise but useful answer.
+"""
+
+    user_message = f"""
+DOCUMENT:
+
+{text_to_analyze}
+
+
+QUESTION:
+
+{question}
+"""
+
+    response = client.responses.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        input=[
+            {
+                "role": "system",
+                "content": system_message
+            },
+            {
+                "role": "user",
+                "content": user_message
+            }
+        ]
+    )
+
+    answer = response.output_text
+
+    if not answer:
+        raise RuntimeError(
+            "Azure OpenAI returned an empty response."
+        )
+
+    return answer
+
+
+# ============================================================
+# Save Analysis
+# ============================================================
+
+def save_analysis(
+    cursor,
+    document_id,
+    analysis
+):
+
+    cursor.execute("""
+        SELECT
+            AnalysisID
+        FROM dbo.DocumentAnalysis
+        WHERE
+            DocumentID = ?;
+    """,
+    (
+        document_id,
+    ))
+
+    existing = cursor.fetchone()
+
+    if existing:
+
+        cursor.execute("""
+            UPDATE dbo.DocumentAnalysis
+            SET
+                Summary = ?,
+                KeyTopics = ?,
+                EntitiesJson = ?,
+                TagsJson = ?,
+                RisksJson = ?,
+                ActionItemsJson = ?,
+                ImportantDatesJson = ?,
+                AnalysisDate = SYSUTCDATETIME()
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            analysis.get("summary"),
+
+            json.dumps(
+                analysis.get(
+                    "key_topics",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "entities",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "tags",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "risks",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "action_items",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "important_dates",
+                    []
+                )
+            ),
+
+            document_id
+        ))
+
+    else:
+
+        cursor.execute("""
+            INSERT INTO dbo.DocumentAnalysis
+            (
+                DocumentID,
+                Summary,
+                KeyTopics,
+                EntitiesJson,
+                TagsJson,
+                RisksJson,
+                ActionItemsJson,
+                ImportantDatesJson
+            )
+            VALUES
+            (
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            );
+        """,
+        (
+            document_id,
+
+            analysis.get("summary"),
+
+            json.dumps(
+                analysis.get(
+                    "key_topics",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "entities",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "tags",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "risks",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "action_items",
+                    []
+                )
+            ),
+
+            json.dumps(
+                analysis.get(
+                    "important_dates",
+                    []
+                )
+            )
+        ))
 
 
 # ============================================================
@@ -71,7 +907,6 @@ app.config["MAX_CONTENT_LENGTH"] = (
 def index():
 
     documents = []
-
     error_message = None
 
     search_text = (
@@ -111,11 +946,9 @@ def index():
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 COUNT(*) AS TotalDocuments,
 
@@ -167,8 +1000,7 @@ def index():
                 ) AS XLSXDocuments
 
             FROM dbo.Documents;
-            """
-        )
+        """)
 
         row = cursor.fetchone()
 
@@ -193,20 +1025,15 @@ def index():
                 d.FileSizeBytes,
                 d.UploadDate,
                 d.Status,
-
-                LEN(
-                    d.ExtractedText
-                ) AS ExtractedCharacters,
-
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
                 a.AnalysisID,
                 a.Summary
-
             FROM dbo.Documents d
-
             LEFT JOIN dbo.DocumentAnalysis a
                 ON d.DocumentID = a.DocumentID
-
-            WHERE 1 = 1
+            WHERE
+                1 = 1
         """
 
         parameters = []
@@ -227,14 +1054,12 @@ def index():
                 f"%{search_text}%"
             )
 
-            parameters.extend(
-                [
-                    wildcard,
-                    wildcard,
-                    wildcard,
-                    wildcard
-                ]
-            )
+            parameters.extend([
+                wildcard,
+                wildcard,
+                wildcard,
+                wildcard
+            ])
 
         if file_type:
 
@@ -270,31 +1095,26 @@ def index():
 
         for row in rows:
 
-            documents.append(
-                {
-                    "DocumentID": row[0],
-                    "FileName": row[1],
-                    "BlobName": row[2],
-                    "FileType": row[3],
-                    "FileSizeBytes": row[4],
-                    "UploadDate": row[5],
-                    "Status": row[6],
-                    "ExtractedCharacters": row[7],
-                    "AnalysisID": row[8],
-                    "Summary": row[9]
-                }
-            )
+            documents.append({
+                "DocumentID": row[0],
+                "FileName": row[1],
+                "BlobName": row[2],
+                "FileType": row[3],
+                "FileSizeBytes": row[4],
+                "UploadDate": row[5],
+                "Status": row[6],
+                "ExtractedCharacters": row[7],
+                "AnalysisID": row[8],
+                "Summary": row[9]
+            })
 
     except Exception as exc:
 
-        error_message = str(
-            exc
-        )
+        error_message = str(exc)
 
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -302,7 +1122,6 @@ def index():
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -317,9 +1136,7 @@ def index():
         search_text=search_text,
         file_type=file_type,
         status_filter=status_filter,
-        allowed_extensions=sorted(
-            ALLOWED_EXTENSIONS
-        )
+        allowed_extensions=sorted(ALLOWED_EXTENSIONS)
     )
 
 
@@ -327,9 +1144,7 @@ def index():
 # Analysis Page
 # ============================================================
 
-@app.route(
-    "/analysis/<int:document_id>"
-)
+@app.route("/analysis/<int:document_id>")
 def view_analysis(document_id):
 
     conn = None
@@ -338,22 +1153,17 @@ def view_analysis(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 d.DocumentID,
                 d.FileName,
                 d.FileType,
                 d.UploadDate,
                 d.Status,
-
-                LEN(
-                    d.ExtractedText
-                ) AS ExtractedCharacters,
-
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
                 a.Summary,
                 a.KeyTopics,
                 a.EntitiesJson,
@@ -362,28 +1172,20 @@ def view_analysis(document_id):
                 a.ActionItemsJson,
                 a.ImportantDatesJson,
                 a.AnalysisDate
-
             FROM dbo.Documents d
-
             LEFT JOIN dbo.DocumentAnalysis a
                 ON d.DocumentID = a.DocumentID
-
             WHERE
                 d.DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
         if not row:
-
-            return (
-                "Document not found.",
-                404
-            )
+            return "Document not found.", 404
 
         analysis = {
             "DocumentID": row[0],
@@ -393,31 +1195,24 @@ def view_analysis(document_id):
             "Status": row[4],
             "ExtractedCharacters": row[5],
             "Summary": row[6],
-
             "KeyTopics": safe_json_loads(
                 row[7]
             ),
-
             "Entities": safe_json_loads(
                 row[8]
             ),
-
             "Tags": safe_json_loads(
                 row[9]
             ),
-
             "Risks": safe_json_loads(
                 row[10]
             ),
-
             "ActionItems": safe_json_loads(
                 row[11]
             ),
-
             "ImportantDates": safe_json_loads(
                 row[12]
             ),
-
             "AnalysisDate": row[13]
         }
 
@@ -438,7 +1233,6 @@ def view_analysis(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -446,7 +1240,6 @@ def view_analysis(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -491,22 +1284,17 @@ def ask_document(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 d.DocumentID,
                 d.FileName,
                 d.FileType,
                 d.UploadDate,
                 d.Status,
-
-                LEN(
-                    d.ExtractedText
-                ) AS ExtractedCharacters,
-
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
                 d.ExtractedText,
                 a.Summary,
                 a.KeyTopics,
@@ -516,48 +1304,24 @@ def ask_document(document_id):
                 a.ActionItemsJson,
                 a.ImportantDatesJson,
                 a.AnalysisDate
-
             FROM dbo.Documents d
-
             LEFT JOIN dbo.DocumentAnalysis a
                 ON d.DocumentID = a.DocumentID
-
             WHERE
                 d.DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
         if not row:
+            return "Document not found.", 404
 
-            return (
-                "Document not found.",
-                404
-            )
-
-        if row[4] != "Analyzed":
-
-            flash(
-                "This document has not finished processing yet.",
-                "error"
-            )
-
-            return redirect(
-                url_for(
-                    "view_analysis",
-                    document_id=document_id
-                )
-            )
-
-        answer = (
-            ask_document_with_ai(
-                row[6],
-                question
-            )
+        answer = ask_document_with_ai(
+            row[6],
+            question
         )
 
         analysis = {
@@ -568,31 +1332,24 @@ def ask_document(document_id):
             "Status": row[4],
             "ExtractedCharacters": row[5],
             "Summary": row[7],
-
             "KeyTopics": safe_json_loads(
                 row[8]
             ),
-
             "Entities": safe_json_loads(
                 row[9]
             ),
-
             "Tags": safe_json_loads(
                 row[10]
             ),
-
             "Risks": safe_json_loads(
                 row[11]
             ),
-
             "ActionItems": safe_json_loads(
                 row[12]
             ),
-
             "ImportantDates": safe_json_loads(
                 row[13]
             ),
-
             "AnalysisDate": row[14]
         }
 
@@ -620,7 +1377,6 @@ def ask_document(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -628,7 +1384,6 @@ def ask_document(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -638,9 +1393,6 @@ def ask_document(document_id):
 
 # ============================================================
 # Re-analyze Document
-#
-# For now, re-analysis still runs synchronously.
-# We can queue this later if desired.
 # ============================================================
 
 @app.route(
@@ -655,63 +1407,47 @@ def reanalyze_document(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 ExtractedText
-
             FROM dbo.Documents
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
         if not row:
-
-            return (
-                "Document not found.",
-                404
-            )
+            return "Document not found.", 404
 
         extracted_text = row[0]
 
         if not extracted_text:
-
             raise RuntimeError(
                 "This document has no extracted text."
             )
 
-        cursor.execute(
-            """
+        cursor.execute("""
             UPDATE dbo.Documents
-
             SET
                 Status = ?
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                "Processing",
-                document_id
-            )
-        )
+        """,
+        (
+            "Processing",
+            document_id
+        ))
 
         conn.commit()
 
-        analysis = (
-            analyze_document_with_ai(
-                extracted_text
-            )
+        analysis = analyze_document_with_ai(
+            extracted_text
         )
 
         save_analysis(
@@ -720,21 +1456,17 @@ def reanalyze_document(document_id):
             analysis
         )
 
-        cursor.execute(
-            """
+        cursor.execute("""
             UPDATE dbo.Documents
-
             SET
                 Status = ?
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                "Analyzed",
-                document_id
-            )
-        )
+        """,
+        (
+            "Analyzed",
+            document_id
+        ))
 
         conn.commit()
 
@@ -749,21 +1481,17 @@ def reanalyze_document(document_id):
 
             if conn and cursor:
 
-                cursor.execute(
-                    """
+                cursor.execute("""
                     UPDATE dbo.Documents
-
                     SET
                         Status = ?
-
                     WHERE
                         DocumentID = ?;
-                    """,
-                    (
-                        "Processing Failed",
-                        document_id
-                    )
-                )
+                """,
+                (
+                    "Processing Failed",
+                    document_id
+                ))
 
                 conn.commit()
 
@@ -778,7 +1506,6 @@ def reanalyze_document(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -786,7 +1513,6 @@ def reanalyze_document(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -816,21 +1542,16 @@ def export_analysis_pdf(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 d.FileName,
                 d.FileType,
                 d.UploadDate,
                 d.Status,
-
-                LEN(
-                    d.ExtractedText
-                ) AS ExtractedCharacters,
-
+                LEN(d.ExtractedText)
+                    AS ExtractedCharacters,
                 a.Summary,
                 a.KeyTopics,
                 a.EntitiesJson,
@@ -839,85 +1560,34 @@ def export_analysis_pdf(document_id):
                 a.ActionItemsJson,
                 a.ImportantDatesJson,
                 a.AnalysisDate
-
             FROM dbo.Documents d
-
             LEFT JOIN dbo.DocumentAnalysis a
                 ON d.DocumentID = a.DocumentID
-
             WHERE
                 d.DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
         if not row:
-
-            return (
-                "Document not found.",
-                404
-            )
+            return "Document not found.", 404
 
         filename = row[0]
-
         file_type = row[1]
-
         upload_date = row[2]
-
         status = row[3]
-
         extracted_characters = row[4]
-
         summary = row[5]
-
-        key_topics = (
-            safe_json_loads(
-                row[6]
-            )
-        )
-
-        entities = (
-            safe_json_loads(
-                row[7]
-            )
-        )
-
-        tags = (
-            safe_json_loads(
-                row[8]
-            )
-        )
-
-        risks = (
-            safe_json_loads(
-                row[9]
-            )
-        )
-
-        action_items = (
-            safe_json_loads(
-                row[10]
-            )
-        )
-
-        important_dates = (
-            safe_json_loads(
-                row[11]
-            )
-        )
-
+        key_topics = safe_json_loads(row[6])
+        entities = safe_json_loads(row[7])
+        tags = safe_json_loads(row[8])
+        risks = safe_json_loads(row[9])
+        action_items = safe_json_loads(row[10])
+        important_dates = safe_json_loads(row[11])
         analysis_date = row[12]
-
-        if status != "Analyzed":
-
-            return (
-                "Document analysis is not complete.",
-                409
-            )
 
         buffer = io.BytesIO()
 
@@ -928,16 +1598,16 @@ def export_analysis_pdf(document_id):
             leftMargin=50,
             topMargin=50,
             bottomMargin=50,
-            title=(
-                f"{filename} - AI Analysis"
-            )
+            title=f"{filename} - AI Analysis"
         )
 
-        styles = (
-            getSampleStyleSheet()
-        )
+        styles = getSampleStyleSheet()
 
         story = []
+
+        # ====================================================
+        # Title
+        # ====================================================
 
         story.append(
             Paragraph(
@@ -967,6 +1637,10 @@ def export_analysis_pdf(document_id):
             )
         )
 
+        # ====================================================
+        # Document Metadata
+        # ====================================================
+
         metadata = [
             [
                 Paragraph(
@@ -984,9 +1658,7 @@ def export_analysis_pdf(document_id):
                     styles["BodyText"]
                 ),
                 Paragraph(
-                    str(
-                        file_type or ""
-                    ).upper(),
+                    str(file_type or "").upper(),
                     styles["BodyText"]
                 )
             ],
@@ -996,9 +1668,7 @@ def export_analysis_pdf(document_id):
                     styles["BodyText"]
                 ),
                 Paragraph(
-                    str(
-                        status or ""
-                    ),
+                    str(status or ""),
                     styles["BodyText"]
                 )
             ],
@@ -1018,9 +1688,7 @@ def export_analysis_pdf(document_id):
                     styles["BodyText"]
                 ),
                 Paragraph(
-                    str(
-                        upload_date or ""
-                    ),
+                    str(upload_date or ""),
                     styles["BodyText"]
                 )
             ],
@@ -1030,9 +1698,7 @@ def export_analysis_pdf(document_id):
                     styles["BodyText"]
                 ),
                 Paragraph(
-                    str(
-                        analysis_date or "N/A"
-                    ),
+                    str(analysis_date or "N/A"),
                     styles["BodyText"]
                 )
             ]
@@ -1047,53 +1713,51 @@ def export_analysis_pdf(document_id):
         )
 
         metadata_table.setStyle(
-            TableStyle(
-                [
-                    (
-                        "BACKGROUND",
-                        (0, 0),
-                        (0, -1),
-                        colors.whitesmoke
-                    ),
-                    (
-                        "GRID",
-                        (0, 0),
-                        (-1, -1),
-                        0.5,
-                        colors.lightgrey
-                    ),
-                    (
-                        "VALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "TOP"
-                    ),
-                    (
-                        "LEFTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        8
-                    ),
-                    (
-                        "RIGHTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        8
-                    ),
-                    (
-                        "TOPPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        7
-                    ),
-                    (
-                        "BOTTOMPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        7
-                    )
-                ]
-            )
+            TableStyle([
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (0, -1),
+                    colors.whitesmoke
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.lightgrey
+                ),
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "TOP"
+                ),
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8
+                ),
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    8
+                ),
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                )
+            ])
         )
 
         story.append(
@@ -1106,6 +1770,10 @@ def export_analysis_pdf(document_id):
                 22
             )
         )
+
+        # ====================================================
+        # Helper for PDF Sections
+        # ====================================================
 
         def add_section(
             title,
@@ -1160,13 +1828,20 @@ def export_analysis_pdf(document_id):
                 )
             )
 
+        # ====================================================
+        # Summary
+        # ====================================================
+
         add_section(
             "Summary",
             [
-                summary or
-                "No summary available."
+                summary or "No summary available."
             ]
         )
+
+        # ====================================================
+        # Key Topics
+        # ====================================================
 
         add_section(
             "Key Topics",
@@ -1175,6 +1850,10 @@ def export_analysis_pdf(document_id):
                 for topic in key_topics
             ]
         )
+
+        # ====================================================
+        # Tags
+        # ====================================================
 
         add_section(
             "Tags",
@@ -1185,6 +1864,10 @@ def export_analysis_pdf(document_id):
                 )
             ] if tags else []
         )
+
+        # ====================================================
+        # Entities
+        # ====================================================
 
         entity_lines = []
 
@@ -1201,14 +1884,17 @@ def export_analysis_pdf(document_id):
             )
 
             entity_lines.append(
-                f"• <b>{name}</b> "
-                f"({entity_type})"
+                f"• <b>{name}</b> ({entity_type})"
             )
 
         add_section(
             "Entities",
             entity_lines
         )
+
+        # ====================================================
+        # Risks
+        # ====================================================
 
         risk_lines = []
 
@@ -1225,14 +1911,17 @@ def export_analysis_pdf(document_id):
             )
 
             risk_lines.append(
-                f"• <b>{severity}</b>: "
-                f"{risk_text}"
+                f"• <b>{severity}</b>: {risk_text}"
             )
 
         add_section(
             "Risks",
             risk_lines
         )
+
+        # ====================================================
+        # Action Items
+        # ====================================================
 
         action_lines = []
 
@@ -1256,16 +1945,14 @@ def export_analysis_pdf(document_id):
             )
 
             if owner:
-
                 line += (
-                    "<br/>&nbsp;&nbsp;&nbsp;"
+                    f"<br/>&nbsp;&nbsp;&nbsp;"
                     f"<b>Owner:</b> {owner}"
                 )
 
             if due_date:
-
                 line += (
-                    "<br/>&nbsp;&nbsp;&nbsp;"
+                    f"<br/>&nbsp;&nbsp;&nbsp;"
                     f"<b>Due:</b> {due_date}"
                 )
 
@@ -1277,6 +1964,10 @@ def export_analysis_pdf(document_id):
             "Action Items",
             action_lines
         )
+
+        # ====================================================
+        # Important Dates
+        # ====================================================
 
         date_lines = []
 
@@ -1293,14 +1984,17 @@ def export_analysis_pdf(document_id):
             )
 
             date_lines.append(
-                f"• <b>{date_value}</b>: "
-                f"{description}"
+                f"• <b>{date_value}</b>: {description}"
             )
 
         add_section(
             "Important Dates",
             date_lines
         )
+
+        # ====================================================
+        # Footer Note
+        # ====================================================
 
         story.append(
             Spacer(
@@ -1345,7 +2039,6 @@ def export_analysis_pdf(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -1353,7 +2046,6 @@ def export_analysis_pdf(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -1362,7 +2054,7 @@ def export_analysis_pdf(document_id):
 
 
 # ============================================================
-# Download Original
+# Download Original Document
 # ============================================================
 
 @app.route(
@@ -1376,36 +2068,26 @@ def download_document(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 FileName,
                 BlobName
-
             FROM dbo.Documents
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
         if not row:
-
-            return (
-                "Document not found.",
-                404
-            )
+            return "Document not found.", 404
 
         filename = row[0]
-
         blob_name = row[1]
 
         blob_service_client = (
@@ -1427,9 +2109,7 @@ def download_document(document_id):
         )
 
         return send_file(
-            io.BytesIO(
-                file_data
-            ),
+            io.BytesIO(file_data),
             as_attachment=True,
             download_name=filename
         )
@@ -1444,7 +2124,6 @@ def download_document(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -1452,7 +2131,6 @@ def download_document(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -1476,24 +2154,19 @@ def delete_document(document_id):
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT
                 FileName,
                 BlobName
-
             FROM dbo.Documents
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         row = cursor.fetchone()
 
@@ -1505,13 +2178,10 @@ def delete_document(document_id):
             )
 
             return redirect(
-                url_for(
-                    "index"
-                )
+                url_for("index")
             )
 
         filename = row[0]
-
         blob_name = row[1]
 
         blob_service_client = (
@@ -1530,29 +2200,23 @@ def delete_document(document_id):
             delete_snapshots="include"
         )
 
-        cursor.execute(
-            """
+        cursor.execute("""
             DELETE FROM dbo.DocumentAnalysis
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
-        cursor.execute(
-            """
+        cursor.execute("""
             DELETE FROM dbo.Documents
-
             WHERE
                 DocumentID = ?;
-            """,
-            (
-                document_id,
-            )
-        )
+        """,
+        (
+            document_id,
+        ))
 
         conn.commit()
 
@@ -1564,7 +2228,6 @@ def delete_document(document_id):
     except Exception as exc:
 
         try:
-
             if conn:
                 conn.rollback()
 
@@ -1579,7 +2242,6 @@ def delete_document(document_id):
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -1587,7 +2249,6 @@ def delete_document(document_id):
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -1595,18 +2256,12 @@ def delete_document(document_id):
             pass
 
     return redirect(
-        url_for(
-            "index"
-        )
+        url_for("index")
     )
 
 
 # ============================================================
 # Upload Document
-#
-# IMPORTANT:
-# This now ONLY stores the document and queues it.
-# The WebJob handles extraction and AI analysis.
 # ============================================================
 
 @app.route(
@@ -1623,14 +2278,10 @@ def upload_document():
         )
 
         return redirect(
-            url_for(
-                "index"
-            )
+            url_for("index")
         )
 
-    file = request.files[
-        "file"
-    ]
+    file = request.files["file"]
 
     if file.filename == "":
 
@@ -1640,9 +2291,7 @@ def upload_document():
         )
 
         return redirect(
-            url_for(
-                "index"
-            )
+            url_for("index")
         )
 
     if not allowed_file(
@@ -1655,9 +2304,7 @@ def upload_document():
         )
 
         return redirect(
-            url_for(
-                "index"
-            )
+            url_for("index")
         )
 
     original_filename = (
@@ -1668,10 +2315,7 @@ def upload_document():
 
     extension = (
         original_filename
-        .rsplit(
-            ".",
-            1
-        )[1]
+        .rsplit(".", 1)[1]
         .lower()
     )
 
@@ -1680,16 +2324,13 @@ def upload_document():
         f"{original_filename}"
     )
 
+    document_id = None
     conn = None
     cursor = None
 
-    blob_uploaded = False
-
     try:
 
-        file_data = (
-            file.read()
-        )
+        file_data = file.read()
 
         file_size = len(
             file_data
@@ -1712,18 +2353,10 @@ def upload_document():
             overwrite=False
         )
 
-        blob_uploaded = True
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        conn = (
-            get_db_connection()
-        )
-
-        cursor = (
-            conn.cursor()
-        )
-
-        cursor.execute(
-            """
+        cursor.execute("""
             INSERT INTO dbo.Documents
             (
                 FileName,
@@ -1732,6 +2365,8 @@ def upload_document():
                 FileSizeBytes,
                 Status
             )
+            OUTPUT
+                INSERTED.DocumentID
             VALUES
             (
                 ?,
@@ -1740,54 +2375,124 @@ def upload_document():
                 ?,
                 ?
             );
-            """,
-            (
-                original_filename,
-                unique_blob_name,
-                extension,
-                file_size,
-                "Queued"
-            )
-        )
+        """,
+        (
+            original_filename,
+            unique_blob_name,
+            extension,
+            file_size,
+            "Processing"
+        ))
+
+        row = cursor.fetchone()
+
+        document_id = row[0]
 
         conn.commit()
 
-        flash(
-            f"{original_filename} was uploaded "
-            "and queued for analysis.",
-            "success"
+        extracted_text = (
+            extract_content(
+                original_filename,
+                file_data
+            )
+        )
+
+        if not extracted_text.strip():
+            raise RuntimeError(
+                "No readable text could be extracted from this file."
+            )
+
+        cursor.execute("""
+            UPDATE dbo.Documents
+            SET
+                ExtractedText = ?,
+                Status = ?
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            extracted_text,
+            "Extracted",
+            document_id
+        ))
+
+        conn.commit()
+
+        analysis = (
+            analyze_document_with_ai(
+                extracted_text
+            )
+        )
+
+        save_analysis(
+            cursor,
+            document_id,
+            analysis
+        )
+
+        cursor.execute("""
+            UPDATE dbo.Documents
+            SET
+                Status = ?
+            WHERE
+                DocumentID = ?;
+        """,
+        (
+            "Analyzed",
+            document_id
+        ))
+
+        conn.commit()
+
+        return redirect(
+            url_for(
+                "view_analysis",
+                document_id=document_id
+            )
         )
 
     except Exception as exc:
 
         try:
 
-            if conn:
-                conn.rollback()
+            if document_id:
+
+                if conn is None:
+                    conn = (
+                        get_db_connection()
+                    )
+
+                if cursor is None:
+                    cursor = (
+                        conn.cursor()
+                    )
+
+                cursor.execute("""
+                    UPDATE dbo.Documents
+                    SET
+                        Status = ?
+                    WHERE
+                        DocumentID = ?;
+                """,
+                (
+                    "Processing Failed",
+                    document_id
+                ))
+
+                conn.commit()
 
         except Exception:
             pass
 
-        if blob_uploaded:
-
-            try:
-
-                blob_client.delete_blob(
-                    delete_snapshots="include"
-                )
-
-            except Exception:
-                pass
-
         flash(
-            f"Upload failed: {str(exc)}",
+            f"Upload failed: "
+            f"{str(exc)}",
             "error"
         )
 
     finally:
 
         try:
-
             if cursor:
                 cursor.close()
 
@@ -1795,7 +2500,6 @@ def upload_document():
             pass
 
         try:
-
             if conn:
                 conn.close()
 
@@ -1803,9 +2507,7 @@ def upload_document():
             pass
 
     return redirect(
-        url_for(
-            "index"
-        )
+        url_for("index")
     )
 
 
@@ -1813,9 +2515,7 @@ def upload_document():
 # Health Check
 # ============================================================
 
-@app.route(
-    "/health"
-)
+@app.route("/health")
 def health():
 
     results = {
@@ -1829,7 +2529,6 @@ def health():
     try:
 
         conn = get_db_connection()
-
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1839,18 +2538,13 @@ def health():
         cursor.fetchone()
 
         cursor.close()
-
         conn.close()
 
-        results[
-            "database"
-        ] = "connected"
+        results["database"] = "connected"
 
     except Exception as exc:
 
-        results[
-            "database"
-        ] = (
+        results["database"] = (
             f"error: {str(exc)}"
         )
 
@@ -1871,15 +2565,11 @@ def health():
 
         container_client.get_container_properties()
 
-        results[
-            "storage"
-        ] = "connected"
+        results["storage"] = "connected"
 
     except Exception as exc:
 
-        results[
-            "storage"
-        ] = (
+        results["storage"] = (
             f"error: {str(exc)}"
         )
 
@@ -1887,25 +2577,33 @@ def health():
 
     try:
 
+        if not AZURE_OPENAI_ENDPOINT:
+
+            raise RuntimeError(
+                "AZURE_OPENAI_ENDPOINT "
+                "is not configured."
+            )
+
+        if not AZURE_OPENAI_DEPLOYMENT:
+
+            raise RuntimeError(
+                "AZURE_OPENAI_DEPLOYMENT "
+                "is not configured."
+            )
+
         get_openai_client()
 
-        results[
-            "openai"
-        ] = "configured"
+        results["openai"] = "configured"
 
     except Exception as exc:
 
-        results[
-            "openai"
-        ] = (
+        results["openai"] = (
             f"error: {str(exc)}"
         )
 
         status_code = 500
 
-    results[
-        "status"
-    ] = (
+    results["status"] = (
         "healthy"
         if status_code == 200
         else "unhealthy"
@@ -1918,7 +2616,7 @@ def health():
 
 
 # ============================================================
-# Entry Point
+# Application Entry Point
 # ============================================================
 
 if __name__ == "__main__":
