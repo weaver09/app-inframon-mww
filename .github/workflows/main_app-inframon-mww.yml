@@ -43,7 +43,7 @@ jobs:
 
 
       # ============================================================
-      # Login to Azure using OIDC
+      # Login to Azure
       # ============================================================
 
       - name: Login to Azure
@@ -56,10 +56,6 @@ jobs:
 
       # ============================================================
       # Deploy Main Flask Application
-      #
-      # This is the deployment method that was working before.
-      # Oryx installs requirements.txt because
-      # SCM_DO_BUILD_DURING_DEPLOYMENT=true.
       # ============================================================
 
       - name: Deploy main application
@@ -71,9 +67,9 @@ jobs:
 
 
       # ============================================================
-      # Package WebJob Only
+      # Package WebJob
       #
-      # run.py must be at the ROOT of the WebJob ZIP.
+      # run.py will be at the root of the ZIP.
       # ============================================================
 
       - name: Package WebJob
@@ -86,17 +82,16 @@ jobs:
 
           cd "$GITHUB_WORKSPACE"
 
-          echo "WebJob package:"
+          echo ""
+          echo "WebJob package contents:"
           unzip -l document-worker.zip
 
 
       # ============================================================
-      # Deploy Continuous WebJob
-      #
-      # Dynamically determine the App Service SCM hostname.
+      # Determine SCM Hostname
       # ============================================================
 
-      - name: Deploy document-worker WebJob
+      - name: Determine SCM hostname
         run: |
           DEFAULT_HOSTNAME=$(az webapp show \
             --resource-group rg-inframon-lab \
@@ -104,18 +99,31 @@ jobs:
             --query defaultHostName \
             --output tsv)
 
-          echo "App hostname: $DEFAULT_HOSTNAME"
-
           APP_PREFIX="${DEFAULT_HOSTNAME%%.*}"
           REGION_HOST="${DEFAULT_HOSTNAME#*.}"
 
           SCM_HOSTNAME="${APP_PREFIX}.scm.${REGION_HOST}"
 
+          echo "App hostname: $DEFAULT_HOSTNAME"
           echo "SCM hostname: $SCM_HOSTNAME"
 
+          echo "SCM_HOSTNAME=$SCM_HOSTNAME" >> "$GITHUB_ENV"
+
+
+      # ============================================================
+      # Deploy Continuous WebJob
+      #
+      # Upload ZIP directly into:
+      # App_Data/jobs/continuous/document-worker
+      # ============================================================
+
+      - name: Deploy document-worker WebJob
+        run: |
           TOKEN=$(az account get-access-token \
             --query accessToken \
             --output tsv)
+
+          echo "Uploading document-worker.zip..."
 
           curl \
             --fail-with-body \
@@ -123,11 +131,12 @@ jobs:
             --request PUT \
             --header "Authorization: Bearer $TOKEN" \
             --header "Content-Type: application/zip" \
+            --header "Content-Disposition: attachment; filename=document-worker.zip" \
             --data-binary "@document-worker.zip" \
-            "https://${SCM_HOSTNAME}/api/continuouswebjobs/document-worker"
+            "https://${SCM_HOSTNAME}/api/zip/site/wwwroot/App_Data/jobs/continuous/document-worker/"
 
           echo ""
-          echo "WebJob uploaded successfully."
+          echo "WebJob files uploaded successfully."
 
 
       # ============================================================
