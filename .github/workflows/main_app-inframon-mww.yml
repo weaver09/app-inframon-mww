@@ -26,6 +26,19 @@ jobs:
 
 
       # ============================================================
+      # Verify WebJob Exists
+      # ============================================================
+
+      - name: Verify WebJob files
+        run: |
+          echo "Checking WebJob structure..."
+
+          find App_Data -type f -print
+
+          test -f App_Data/jobs/continuous/document-worker/run.py
+
+
+      # ============================================================
       # Login to Azure using OIDC
       # ============================================================
 
@@ -38,10 +51,9 @@ jobs:
 
 
       # ============================================================
-      # Deploy Application
+      # Deploy Main Application
       #
-      # Azure App Service / Oryx will install requirements.txt
-      # because SCM_DO_BUILD_DURING_DEPLOYMENT=true.
+      # Azure App Service / Oryx installs requirements.txt.
       # ============================================================
 
       - name: Deploy to Azure Web App
@@ -50,3 +62,32 @@ jobs:
           app-name: app-inframon-mww
           slot-name: Production
           package: .
+
+
+      # ============================================================
+      # Deploy WebJob Files Explicitly
+      #
+      # Put run.py directly in the WebJobs discovery location.
+      # ============================================================
+
+      - name: Deploy WebJob
+        run: |
+          az webapp deploy \
+            --resource-group rg-inframon-lab \
+            --name app-inframon-mww \
+            --type static \
+            --src-path App_Data/jobs/continuous/document-worker/run.py \
+            --target-path App_Data/jobs/continuous/document-worker/run.py \
+            --restart false
+
+
+      # ============================================================
+      # Verify Azure Sees Continuous WebJobs
+      # ============================================================
+
+      - name: List WebJobs
+        run: |
+          az webapp webjob continuous list \
+            --resource-group rg-inframon-lab \
+            --name app-inframon-mww \
+            --output table
