@@ -93,12 +93,26 @@ jobs:
       # ============================================================
       # Deploy Continuous WebJob
       #
-      # Uses Microsoft Entra token from the OIDC Azure login.
-      # This does NOT redeploy or overwrite the Flask application.
+      # Dynamically determine the App Service SCM hostname.
       # ============================================================
 
       - name: Deploy document-worker WebJob
         run: |
+          DEFAULT_HOSTNAME=$(az webapp show \
+            --resource-group rg-inframon-lab \
+            --name app-inframon-mww \
+            --query defaultHostName \
+            --output tsv)
+
+          echo "App hostname: $DEFAULT_HOSTNAME"
+
+          APP_PREFIX="${DEFAULT_HOSTNAME%%.*}"
+          REGION_HOST="${DEFAULT_HOSTNAME#*.}"
+
+          SCM_HOSTNAME="${APP_PREFIX}.scm.${REGION_HOST}"
+
+          echo "SCM hostname: $SCM_HOSTNAME"
+
           TOKEN=$(az account get-access-token \
             --query accessToken \
             --output tsv)
@@ -106,12 +120,11 @@ jobs:
           curl \
             --fail-with-body \
             --show-error \
-            --silent \
             --request PUT \
             --header "Authorization: Bearer $TOKEN" \
             --header "Content-Type: application/zip" \
             --data-binary "@document-worker.zip" \
-            "https://app-inframon-mww.scm.azurewebsites.net/api/continuouswebjobs/document-worker"
+            "https://${SCM_HOSTNAME}/api/continuouswebjobs/document-worker"
 
           echo ""
           echo "WebJob uploaded successfully."
