@@ -26,17 +26,7 @@ jobs:
 
 
       # ============================================================
-      # Setup Python
-      # ============================================================
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-
-      # ============================================================
-      # Verify WebJob
+      # Verify WebJob Structure
       # ============================================================
 
       - name: Verify WebJob structure
@@ -72,21 +62,6 @@ jobs:
 
 
       # ============================================================
-      # Install Dependencies Into Deployment Package
-      # ============================================================
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-
-          mkdir -p deployment/.python_packages/lib/site-packages
-
-          pip install \
-            -r requirements.txt \
-            --target deployment/.python_packages/lib/site-packages
-
-
-      # ============================================================
       # Verify Deployment Contents
       # ============================================================
 
@@ -98,12 +73,14 @@ jobs:
 
           echo ""
           echo "Checking Flask app..."
-
           test -f deployment/app.py
 
           echo ""
-          echo "Checking WebJob..."
+          echo "Checking requirements..."
+          test -f deployment/requirements.txt
 
+          echo ""
+          echo "Checking WebJob..."
           test -f deployment/App_Data/jobs/continuous/document-worker/run.py
 
 
@@ -124,7 +101,7 @@ jobs:
 
 
       # ============================================================
-      # Azure Login
+      # Login to Azure
       # ============================================================
 
       - name: Login to Azure
@@ -136,9 +113,9 @@ jobs:
 
 
       # ============================================================
-      # Disable Azure/Oryx Build
+      # Configure App Service
       #
-      # Dependencies were already installed above by GitHub.
+      # Oryx MUST build requirements.txt.
       # ============================================================
 
       - name: Configure deployment settings
@@ -147,13 +124,13 @@ jobs:
             --resource-group rg-inframon-lab \
             --name app-inframon-mww \
             --settings \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
               WEBSITE_SKIP_RUNNING_KUDUAGENT=false \
               WEBSITES_ENABLE_APP_SERVICE_STORAGE=true
 
 
       # ============================================================
-      # Deploy Entire Application + WebJob
+      # Deploy Application + WebJob
       # ============================================================
 
       - name: Deploy application package
